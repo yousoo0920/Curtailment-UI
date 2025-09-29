@@ -1,0 +1,5 @@
+@import "tailwindcss";
+
+/* Vite 기본 스타일 제거 + 전체 화면 채우기 */
+html, body, #root { height: 100%; }
+#root { max-width: none; margin: 0; padding: 0; }
