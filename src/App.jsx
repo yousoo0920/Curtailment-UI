@@ -1,4 +1,5 @@
 // src/App.jsx
+import PVScreen from "./pages/PVPage";
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import {
   Home,
@@ -14,8 +15,30 @@ import {
   RotateCcw,
   Zap,
   ShieldOff,
-  Sun, // ★ 추가: 우측 지표 카드 아이콘
+  Sun,
+  Activity, // ★ 추가: 우측 지표 카드 아이콘
 } from "lucide-react";
+
+// ───────── 백엔드 폴링 훅 ─────────
+function useBackendStatus(intervalMs = 60000) { // 60초마다 갱신
+  const [status, setStatus] = React.useState(null);
+  React.useEffect(() => {
+    let timer;
+    const load = async () => {
+      try {
+        const res = await fetch("http://127.0.0.1:8000/api/status");
+        const data = await res.json();
+        setStatus(data);
+      } catch (e) {
+        console.error("API 불러오기 실패:", e);
+      }
+    };
+    load();
+    if (intervalMs > 0) timer = setInterval(load, intervalMs);
+    return () => timer && clearInterval(timer);
+  }, [intervalMs]);
+  return status;
+}
 
 /* ============ 공통 유틸 ============ */
 const pad = (n) => String(n).padStart(2, "0");
@@ -156,120 +179,284 @@ const TowerIcon = ({ w = 210, className = "" }) => (
   </svg>
 );
 
-/* ============ 좌측 누적 전력량 ============ */
+/* ============ 좌측 누적 전력량 (정확 정렬 버전) ============ */
 const AccumChart = () => {
   const max = 6000;
   const ticks = [0, 2000, 4000, 6000];
+
   const data = [
-    { name: "발전", today: 330.0, prev: 4045.8, color: "#c5ff46", todayColor: "#eefc71" },
-    { name: "충전", today: 42.0, prev: 2670.7, color: "#63d8ff", todayColor: "#63d8ff" },
-    { name: "방전", today: 0.0, prev: 2269.4, color: "#f1a256", todayColor: "#ffc27e" },
-    { name: "송전", today: 288.0, prev: 1375.0, color: "#ae8bff", todayColor: "#ae8bff" },
+    { name: "발전", prev: 4045.8, today: 3330.7, color: "#c5ff46" },
+    { name: "충전", prev: 2670.7, today: 1712.1,  color: "#63d8ff" },
+    { name: "방전", prev: 2269.4, today: 543.2,   color: "#f1a256" },
+    { name: "송전", prev: 1375.0, today: 288.5, color: "#ae8bff" },
   ];
+
+  const BAR_H = 20;
+  const BAR_GAP = 8;
+
+  const prevStyle  = (base) => ({ background: base, opacity: 0.35 });
+  const todayStyle = (base) => ({ background: base, opacity: 0.95 });
+
+  const chartRef = React.useRef(null);
+  const plotRef  = React.useRef(null);
+  const [plotBox, setPlotBox] = React.useState({ left: 0, width: 0 });
+
+  React.useEffect(() => {
+    const sync = () => {
+      if (!chartRef.current || !plotRef.current) return;
+      const c = chartRef.current.getBoundingClientRect();
+      const p = plotRef.current.getBoundingClientRect();
+      setPlotBox({ left: p.left - c.left, width: p.width });
+    };
+    const ro1 = new ResizeObserver(sync);
+    const ro2 = new ResizeObserver(sync);
+    chartRef.current && ro1.observe(chartRef.current);
+    plotRef.current && ro2.observe(plotRef.current);
+    sync();
+    return () => { ro1.disconnect(); ro2.disconnect(); };
+  }, []);
+
+  const tickX = (t) => plotBox.left + (t / max) * plotBox.width;
+
   return (
-    <div className="rounded-md bg-[#1a2a36] border border-[#22394b] p-4">
-      <div className="flex items-center justify-between">
+    <div className="rounded-[1px] bg-[#162430] border border-[#22394b] overflow-hidden" style={{ height: 460 }}>
+      <div className="px-4 py-2 bg-[#14222c] border-b border-[#22394b] flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full bg-[#9fd6ff]" />
+        <span className="text-[14px] font-semibold text-[#d7e9f6]">누적 전력량</span>
+      </div>
+
+      <div className="px-4 py-2 bg-[#172531] border-b border-[#22394b] flex items-center justify-between">
         <div className="flex items-center gap-2 text-[12px]">
-          <span className="px-2 py-1 rounded bg-[#243646] border border-[#2a3f50]">일</span>
+          <span className="px-2 py-1 rounded bg-[#243646] border border-[#2a3f50] text-[#e8f5ff]">일</span>
           <span className="px-2 py-1 rounded border border-transparent text-slate-300">월</span>
+          <span className="px-2 py-1 rounded border border-transparent text-slate-300">년</span>
         </div>
         <div className="text-[12px] text-slate-300">단위 kWh</div>
       </div>
-      <div className="mt-4">
-        {data.map((row) => {
-          const prevPct = Math.max(0, Math.min(100, (row.prev / max) * 100));
+
+      <div ref={chartRef} className="relative px-4 pt-6 pb-4 h-[360px]">
+        {ticks.map((t) => (
+          <div
+            key={t}
+            className="absolute top-0 bottom-12 border-r"
+            style={{ left: `${tickX(t)}px`, borderColor: "#2a3f50", opacity: 0.35 }}
+          />
+        ))}
+
+        {data.map((row, idx) => {
+          const prevPct  = Math.max(0, Math.min(100, (row.prev  / max) * 100));
           const todayPct = Math.max(0, Math.min(100, (row.today / max) * 100));
+
           return (
-            <div key={row.name} className="grid grid-cols-12 items-center gap-2 mb-3">
+            <div key={row.name} className="grid grid-cols-12 items-center gap-2 mb-5">
               <div className="col-span-2 text-[13px] text-slate-200">{row.name}</div>
               <div className="col-span-8">
-                <div className="relative h-3 bg-[#253647] rounded">
-                  <div className="h-full rounded-l" style={{ width: `${prevPct}%`, background: row.color, opacity: 0.6 }} />
+                <div ref={idx === 0 ? plotRef : null} className="relative overflow-visible" style={{ height: BAR_H*2 + BAR_GAP }}>
+                  <div className="absolute left-0 top-0 right-0">
+                    <div className="bg-transparent" style={{ height: BAR_H }}>
+                      <div className="h-full" style={{ width: `${prevPct}%`, borderRadius: 0, ...prevStyle(row.color) }} />
+                    </div>
+                  </div>
+                  <div className="absolute left-0" style={{ top: BAR_H + BAR_GAP, right: 0 }}>
+                    <div className="bg-transparent" style={{ height: BAR_H }}>
+                      <div className="h-full" style={{ width: `${todayPct}%`, borderRadius: 0, ...todayStyle(row.color) }} />
+                    </div>
+                  </div>
+
                   <div
-                    className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-sm"
+                    className="absolute text-[12px] text-slate-100"
                     style={{
-                      left: `calc(${todayPct}% - 6px)`,
-                      background: row.todayColor,
-                      boxShadow: "0 0 0 2px #0f1a23",
+                      left: `${plotBox.width + 20}px`,
+                      top: `${BAR_H/2}px`,
+                      transform: "translateY(-50%)",
+                      width: 80,
+                      textAlign: "left",
                     }}
-                  />
+                  >
+                    {row.prev.toLocaleString()}
+                  </div>
+                  <div
+                    className="absolute text-[12px] text-slate-100"
+                    style={{
+                      left: `${plotBox.width + 20}px`,
+                      top: `${BAR_H + BAR_GAP + BAR_H/2}px`,
+                      transform: "translateY(-50%)",
+                      width: 80,
+                      textAlign: "left",
+                    }}
+                  >
+                    {row.today.toLocaleString()}
+                  </div>
                 </div>
               </div>
-              <div className="col-span-2 text-right text-[12px] text-slate-100">
-                {row.prev.toLocaleString()}
-              </div>
+
+              <div className="col-span-2" />
             </div>
           );
         })}
-        <div className="mt-3 flex justify-between text-[11px] text-slate-300">
-          {ticks.map((t) => (
-            <span key={t}>{t}</span>
-          ))}
+
+        {ticks.map((t) => (
+          <span
+            key={`label-${t}`}
+            className="absolute bottom-12 text-[11px] text-slate-300"
+            style={{
+              left: `${tickX(t)}px`,
+              transform: "translateX(-50%)",
+            }}
+          >
+            {t.toLocaleString()}
+          </span>
+        ))}
+
+        <div className="absolute bottom-0 right-0 left-0 mb-2 flex justify-center gap-8 text-[13px]">
+          <div className="flex items-center gap-2">
+            <span className="w-4 h-2 rounded-sm" style={prevStyle("#9fb6c9")} />
+            <span className="text-slate-200">전일</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="w-4 h-2 rounded-sm" style={todayStyle("#c5ff46")} />
+            <span className="text-slate-200">금일</span>
+          </div>
         </div>
       </div>
     </div>
   );
 };
 
-/* ============ 좌측 하단: 금액 패널 + 미니 라인 차트 (SVG) ============ */
+/* ============ 좌측 하단: 금액 패널 (그래프 제거, 2+1 레이아웃) ============ */
 const PricePanel = () => {
-  const data = useMemo(() => {
-    const arr = [];
-    let v = 180;
-    for (let i = 0; i < 60; i++) {
-      v += (Math.random() - 0.5) * 10;
-      arr.push(Math.max(120, Math.min(360, v)));
-    }
-    return arr;
-  }, []);
-  const W = 520,
-    H = 90,
-    padL = 30,
-    padR = 10,
-    padT = 10,
-    padB = 18;
-  const innerW = W - padL - padR,
-    innerH = H - padT - padB;
-  const minV = 120,
-    maxV = 360;
-  const path = data
-    .map((v, i) => {
-      const x = padL + (i / (data.length - 1)) * innerW;
-      const y = padT + innerH * (1 - (v - minV) / (maxV - minV));
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
   return (
-    <div className="rounded-md bg-[#1a2a36] border border-[#22394b] p-3">
-      <div className="flex gap-4">
-        <div className="flex-1 rounded-md bg-[#172633] border border-[#244255] p-3">
+    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b] p-3 h-[199px]">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="rounded-md bg-[#172633] border border-[#244255] p-4">
           <div className="text-[12px] text-slate-300">SMP 금액</div>
-          <div className="text-xl font-bold">
+          <div className="mt-1 text-2xl font-bold tracking-tight">
             0 <span className="text-slate-300 text-[12px]">원/kWh</span>
           </div>
         </div>
-        <div className="flex-1 rounded-md bg-[#172633] border border-[#244255] p-3">
+        <div className="rounded-md bg-[#172633] border border-[#244255] p-4">
           <div className="text-[12px] text-slate-300">REC 금액</div>
-          <div className="text-xl font-bold">
-            0 <span className="text-slate-300 text-[12px]">원/kWh</span>
-          </div>
-        </div>
-        <div className="flex-1 rounded-md bg-[#172633] border border-[#244255] p-3">
-          <div className="text-[12px] text-slate-300">SMP + REC 금액</div>
-          <div className="text-xl font-bold">
+          <div className="mt-1 text-2xl font-bold tracking-tight">
             0 <span className="text-slate-300 text-[12px]">원/kWh</span>
           </div>
         </div>
       </div>
-      <div className="mt-3 relative rounded-md bg-[#14222c] border border-[#22394b]">
+
+      <div className="mt-3 rounded-md bg-[#14222c] border border-[#22394b] p-4 flex items-baseline justify-between">
+        <div className="text-[20px] text-slate-300">SMP + REC 금액</div>
+        <div className="text-4xl font-black tracking-tight leading-none">
+          0 <span className="text-slate-300 text-[16px] font-semibold ml-1">원/kWh</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ============ 하단: 실시간 그래프 패널 (상단 헤더 + 새로고침 버튼) ============ */
+const MiddleGraphPanel = () => {
+  const data = Array.from({ length: 30 }, (_, i) => ({
+    x: i,
+    y: Math.max(0, Math.min(300, 150 + Math.sin(i / 3) * 100 + Math.random() * 30)),
+  }));
+
+  const W = 520, H = 126.5, padL = 40, padR = 20, padT = 20, padB = 30;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const minY = 0, maxY = 300;
+
+  const path = data
+    .map((d, i) => {
+      const x = padL + (i / (data.length - 1)) * innerW;
+      const y = padT + innerH * (1 - (d.y - minY) / (maxY - minY));
+      return `${i === 0 ? "M" : "L"}${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b]">
+      <div className="px-3 py-2 bg-[#14222c] border-b border-[#22394b] flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Activity size={16} className="text-[#9fd6ff]" />
+          <span className="text-[13px] font-semibold text-[#d7e9f6]">
+            실시간 그래프 <span className="opacity-70">(1분 주기)</span>
+          </span>
+        </div>
+        <button
+          type="button"
+          className="p-1.5 rounded border border-[#2a3e4d] hover:bg-[#1b2b36] text-[#cfe7f6]"
+          title="새로고침"
+        >
+          <RotateCcw size={16} />
+        </button>
+      </div>
+
+      <div className="relative m-3 rounded-md bg-[#14222c] border border-[#22394b]">
         <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
           {[0, 0.25, 0.5, 0.75, 1].map((t, i) => {
             const y = padT + innerH * t;
-            return <line key={i} x1={padL} y1={y} x2={W - padR} y2={y} stroke="#2a3f50" strokeWidth="1" opacity="0.35" />;
+            return (
+              <line key={i} x1={padL} y1={y} x2={W - padR} y2={y} stroke="#2a3f50" opacity="0.3" />
+            );
           })}
           <path d={path} fill="none" stroke="#69e3ff" strokeWidth="2" />
+          {[0, 100, 200, 300].map((val, i) => {
+            const y = padT + innerH * (1 - val / maxY);
+            return (
+              <text key={i} x={5} y={y + 4} fontSize="11" fill="#a8c7d6">
+                {val}
+              </text>
+            );
+          })}
         </svg>
-        <div className="absolute right-2 bottom-1 text-[10px] text-slate-400">실시간 그래프 (1분 주기)</div>
+        <div className="absolute right-2 bottom-1 text-[11px] text-slate-400">단위: kW</div>
+      </div>
+    </div>
+  );
+};
+
+/* ============ 하단: 시스템 로그 패널 (알림 리스트) ============ */
+const SystemLogPanel = () => {
+  const logs = [
+    { id: 1, scope: "BMS[BMS]", time: "2018-08-09 00:01:41", msg: "NPS ( Normal Po… )", level: "info" },
+    { id: 2, scope: "PCS[PCS]", time: "2018-07-20 17:17:44", msg: "MC RUN (INV)", level: "warn" },
+    { id: 3, scope: "PCS[PCS]", time: "2018-07-20 17:17:44", msg: "INV RUN (INV)", level: "warn" },
+  ];
+
+  const colorByLevel = (lv) =>
+    lv === "warn" ? "#ffcf77" : lv === "error" ? "#ff8b8b" : "#8fd3ff";
+
+  return (
+    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b] h-[199.5px] flex flex-col">
+      <div className="px-3 py-2 bg-[#14222c] border-b border-[#22394b] flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Bell size={16} className="text-[#9fd6ff]" />
+          <span className="text-[13px] font-semibold text-[#d7e9f6]">알람 : 시스템 로그</span>
+        </div>
+        <button
+          type="button"
+          className="p-1.5 rounded border border-[#2a3e4d] hover:bg-[#1b2b36] text-[#cfe7f6]"
+          title="새로고침"
+        >
+          <RotateCcw size={16} />
+        </button>
+      </div>
+
+      <div className="px-3 py-2 flex-1 overflow-y-auto">
+        {logs.map((row) => (
+          <div
+            key={row.id}
+            className="grid grid-cols-12 items-center py-2 border-b border-[#22394b]/60 last:border-b-0"
+          >
+            <div className="col-span-4 text-[13px] text-[#cfe7f6] truncate">{row.scope}</div>
+            <div className="col-span-4 text-[12px] text-slate-400">{row.time}</div>
+            <div
+              className="col-span-4 text-[13px] font-semibold truncate"
+              style={{ color: colorByLevel(row.level) }}
+              title={row.msg}
+            >
+              {row.msg}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -278,12 +465,9 @@ const PricePanel = () => {
 /* ============ 지표(아이콘 2단) 컴포넌트 ============ */
 const IconMetricGroup = ({ icon, rows }) => (
   <div className="flex items-start gap-4">
-    {/* 아이콘 */}
     <div className="w-[44px] h-[44px] flex items-center justify-center rounded-lg bg-[#16303b] border border-[#285064]">
       {icon}
     </div>
-
-    {/* 라벨/값 2줄 */}
     <div className="flex-1 grid grid-cols-2 gap-y-1 leading-tight">
       {rows.map((r) => (
         <React.Fragment key={r.label}>
@@ -298,7 +482,7 @@ const IconMetricGroup = ({ icon, rows }) => (
   </div>
 );
 
-/* ============ FlowPanel ============ */
+/* ============ FlowPanel (대시보드 메인) ============ */
 const MetricRow = ({ dot, label, val, unit, size = "md" }) => {
   const isLg = size === "lg";
   return (
@@ -312,41 +496,30 @@ const MetricRow = ({ dot, label, val, unit, size = "md" }) => {
 };
 
 const FlowPanel = () => {
-  const STAGE = { w: 2300, h: 560 };
-
-  // 바닥 패널 섹션
+  const STAGE = { w: 2300, h: 838 }; // 높이 보정
   const L = { x: 0, y: 670, w: 980, h: 140 };
   const M = { x: L.x + L.w + 20, y: 670, w: 520, h: 140 };
-  const R = { x: M.x + M.w - 50, y: 670, w: 800, h: 140 };
+  const R = { x: M.x + M.w, y: 670, w: 800, h: 140 };
 
-  // 한 줄 하단 패널
   const BOTTOM = { x: L.x, y: 530, w: R.x + R.w - L.x, h: 280 };
   const L_RATIO = (L.w / (L.w + M.w + R.w)) * 100;
   const LM_RATIO = ((L.w + M.w) / (L.w + M.w + R.w)) * 100;
 
-  // 상단 오브젝트
   const PV = { x: 100, y: 186, w: 280 };
   const PIPE = { x: 360, y: 270, w: 1220, h: 40 };
   const PV_LABEL = { x: 650, y: 202 };
 
-  // 중앙/하단
   const PCS = { x: 1020, y: 622, w: 320, h: 104 };
   const TOWER = { x: 1500, y: 128, w: 300 };
 
-  // 배터리/부가
   const BAT = { x: 1500, y: 600, w: 280, h: 150 };
-  const BAT_CELL = { w: 42, h: 62 };
   const SOH_TEMP = { x: BAT.x + BAT.w + 60, y: BAT.y - 10, w: 280 };
   const BMS = { x: BAT.x + BAT.w + 396, y: BAT.y - 68, w: 110, h: BAT.h + 125 };
 
-  // 라인
   const BRANCH = { x: PIPE.x + 820, y: PIPE.y + PIPE.h - 6, w: 22, h: 318 };
-  const PCS_LINE = { x: 1335, y: 665, w: 200, h: 16 };
 
-  // 최상단 바
   const TOPBAR = { x: 15, y: 6, w: STAGE.w - 24, h: 102 };
 
-  // 타일
   const Tile = ({ icon, label, active = false }) => (
     <div
       className="flex flex-col items-center justify-center h-[242px] w-[124px] rounded-md border transition-colors"
@@ -362,10 +535,9 @@ const FlowPanel = () => {
 
   return (
     <div
-      className="relative rounded-md bg-[#1a2a36] border border-[#22394b] p-4 pt-205 overflow-visible"
+      className="relative rounded-md bg-[#1a2a36] border border-[#22394b] p-4 pt-[205px] overflow-visible"
       style={{ width: STAGE.w, height: STAGE.h }}
     >
-      {/* 최상단 어두운 패널 */}
       <div
         className="absolute flex items-center justify-between rounded-md border px-3"
         style={{
@@ -384,23 +556,24 @@ const FlowPanel = () => {
             <Zap size={24} className="inline mr-1" />
             충전중
           </Chip>
-        <Chip color="#25d3a2">A 자동</Chip>
+          <Chip color="#25d3a2">A 자동</Chip>
         </div>
 
         <div className="flex items-center gap-2">
           <MiniPill icon={<span className="opacity-80">⚙️</span>}>항온항습기 2</MiniPill>
           <MiniPill icon={<Droplets size={24} className="text-[#69e3ff]" />}>습도 73.6%</MiniPill>
-          <MiniPill icon={<Thermometer size={24} className="text-[#69e3ff]" />}>온도 22.9℃</MiniPill>
+          <MiniPill icon={<Thermometer size={24} className="text-[#69e3ff]" />}>
+            <span>온도</span>&nbsp;22.9℃
+          </MiniPill>
         </div>
       </div>
 
-      {/* 하단 통합 패널 배경 */}
       <div
         className="absolute rounded-md border"
         style={{
           left: BOTTOM.x,
           top: BOTTOM.y,
-          width: BOTTOM.w,
+          width: BOTTOM.w-20,
           height: BOTTOM.h,
           background: `linear-gradient(
             90deg,
@@ -414,12 +587,10 @@ const FlowPanel = () => {
         }}
       />
 
-      {/* 좌측 PV */}
       <div className="absolute" style={{ left: PV.x, top: PV.y, zIndex: 10 }}>
         <PVIcon w={PV.w} className="text-slate-200" />
       </div>
 
-      {/* 상단 파이프 */}
       <div
         className="absolute rounded-full"
         style={{
@@ -440,25 +611,22 @@ const FlowPanel = () => {
         />
       </div>
 
-      {/* 파이프 라벨 (크게) */}
-      <div className="absolute text-[#79e9ff]" style={{ left: PV_LABEL.x, top: PV_LABEL.y }}>
+      <div className="absolute text-[#79e9ff]" style={{ left: 650, top: 202 }}>
         <span className="text-[24px] font-semibold">PV. Meter</span>
         <span className="ml-3 text-white font-extrabold text-[28px] align-middle">305</span>
         <span className="ml-1 text-[#63d8ff] font-semibold text-[20px] align-middle">kW</span>
       </div>
 
-      {/* 오른쪽 칩 (크게) */}
-      <div className="absolute flex gap-2" style={{ left: PV_LABEL.x + 320, top: PV_LABEL.y + 2 }}>
+      <div className="absolute flex gap-2" style={{ left: 970, top: 204 }}>
         <div className="h-8 px-3 rounded bg-[#173241] border border-[#295065] text-[24px] text-[#bfefff] flex items-center">
           <Zap size={46} className="mr-1 text-[#69e3ff]" />
           충전 9 kW
         </div>
       </div>
 
-      {/* 분기선 + 칩 */}
       <div
         className="absolute rounded bg-[#59e6e2]/60"
-        style={{ left: BRANCH.x, top: BRANCH.y, width: BRANCH.w, height: BRANCH.h, zIndex: 2 }}
+        style={{ left: BRANCH.x, top: BRANCH.y, width: BRANCH.w, height: 318, zIndex: 2 }}
       />
       <div className="absolute flex flex-col gap-2 text-[13px]" style={{ left: BRANCH.x + 50, top: BRANCH.y + 34 }}>
         <Chip color="#63d8ff">
@@ -471,12 +639,10 @@ const FlowPanel = () => {
         </Chip>
       </div>
 
-      {/* 송전탑 */}
-      <div className="absolute" style={{ left: TOWER.x, top: TOWER.y }}>
-        <TowerIcon w={TOWER.w} className="text-slate-200" />
+      <div className="absolute" style={{ left: 1500, top: 128 }}>
+        <TowerIcon w={300} className="text-slate-200" />
       </div>
 
-      {/* 우측 지표 카드 (아이콘 버전) */}
       <div
         className="absolute rounded-md border border-[#2a4456] p-4 space-y-4"
         style={{ left: 1855, top: 236, width: 410, background: "rgba(22,36,48,0.65)" }}
@@ -497,18 +663,17 @@ const FlowPanel = () => {
         />
       </div>
 
-      {/* =================== PCS 운영상태 (좌 라벨 + 우 박스) =================== */}
+      {/* 좌측: PCS 운영상태 */}
       <div
         className="absolute flex"
         style={{
-          left: L.x + 12,
+          left: 4,
           top: BOTTOM.y + 14,
-          width: L.w - 24,
+          width: 980 - 24,
           height: BOTTOM.h - 8,
           zIndex: 2,
         }}
       >
-        {/* 좌측 세로 라벨 패널 */}
         <div
           className="h-full rounded-l-md border grid place-items-center"
           style={{
@@ -523,7 +688,6 @@ const FlowPanel = () => {
           </div>
         </div>
 
-        {/* 우측 컨트롤 박스 */}
         <div
           className="flex-1 rounded-r-md border p-4"
           style={{
@@ -541,25 +705,22 @@ const FlowPanel = () => {
           </div>
         </div>
       </div>
-      {/* ==================================================================== */}
 
       {/* 중앙: PCS 카드 */}
       <div
         className="absolute rounded-xl border-2 border-[#a9c6d6] px-7 py-5 text-center bg-[#1b2a35] shadow-[0_6px_16px_rgba(0,0,0,0.35)]"
-        style={{ left: PCS.x, top: PCS.y, width: PCS.w, height: PCS.h, zIndex: 2 }}
+        style={{ left: 1020, top: 622, width: 320, height: 104, zIndex: 2 }}
       >
         <div className="text-[44px] text-slate-200 mb-1">PCS #1</div>
       </div>
 
-      {/* 카드 아래 라벨: 0.0 kW */}
       <div
         className="absolute text-center text-white font-extrabold"
-        style={{ left: PCS.x, top: PCS.y + PCS.h + 8, width: PCS.w, zIndex: 2 }}
+        style={{ left: 1020, top: 622 + 104 + 8, width: 320, zIndex: 2 }}
       >
         0.0 kW
       </div>
 
-      {/* PCS → 배터리 라인 */}
       <div
         className="absolute rounded"
         style={{
@@ -573,10 +734,10 @@ const FlowPanel = () => {
       />
 
       {/* 배터리 게이지 */}
-      <div className="absolute" style={{ left: BAT.x, top: BAT.y, width: BAT.w, zIndex: 2 }}>
+      <div className="absolute" style={{ left: 1500, top: 600, width: 280, zIndex: 2 }}>
         <div
           className="relative rounded-[16px] bg-[#1e2d3a] border-2 border-[#6e8594] shadow-[inset_0_8px_18px_rgba(0,0,0,0.55)]"
-          style={{ height: BAT.h }}
+          style={{ height: 150 }}
         >
           <div
             className="absolute left-3 top-1/2 -translate-y-1/2 rounded-[14px] bg-gradient-to-r from-[#3be2cf] to-[#6be7ff]"
@@ -592,7 +753,7 @@ const FlowPanel = () => {
       {/* SOH / TEMP */}
       <div
         className="absolute text-[16px] space-y-3"
-        style={{ left: SOH_TEMP.x, top: SOH_TEMP.y, width: SOH_TEMP.w, zIndex: 3 }}
+        style={{ left: 1840, top: 590, width: 280, zIndex: 3 }}
       >
         <div className="flex items-center gap-3">
           <div className="w-[84px] flex justify-center">
@@ -611,33 +772,21 @@ const FlowPanel = () => {
         </div>
       </div>
 
-      {/* BMS 연결 세로 라인 + 박스 */}
+      {/* BMS 박스 */}
       <div
         className="absolute"
         style={{
-          left: BMS.x - 10,
-          top: BAT.y - 6,
-          width: 2,
-          height: BAT.h + 22,
-          background: "#2a4456",
-          borderRadius: 1,
-          zIndex: 2,
-        }}
-      />
-      <div
-        className="absolute grid place-items-center text-[#69e3ff] font-extrabold text-[36px]"
-        style={{
-          left: BMS.x,
-          top: BMS.y,
-          width: BMS.w,
-          height: BMS.h,
+          left: 2190, // BMS.x
+          top: 531,   // BMS.y (보정)
+          width: 110,
+          height: 278,
           background: "#213547",
           border: "1px solid #2b4658",
           borderRadius: 8,
           zIndex: 2,
         }}
       >
-        BMS
+        <div className="w-full h-full grid place-items-center text-[#69e3ff] font-extrabold text-[36px]">BMS</div>
       </div>
     </div>
   );
@@ -654,27 +803,158 @@ const DonutTile = ({
 }) => {
   const angle = Math.max(0, Math.min(100, pct)) * 3.6;
   return (
-    <div className="flex items-center px-8 py-6">
-      <div className="relative w-[94px] h-[94px] mr-6">
-        <div className="absolute inset-0 rounded-full" style={{ background: `conic-gradient(${ring} ${angle}deg, #2e4150 0)` }} />
-        <div className="absolute inset-[12px] rounded-full bg-[#15212b] grid place-items-center">
-          <span className="text-[16px] font-bold text-slate-100">{pct}%</span>
+    <div className="flex items-center px-8 py-3">
+      <div className="relative w-[72px] h-[72px] mr-5">
+        <div
+          className="absolute inset-0 rounded-full"
+          style={{ background: `conic-gradient(${ring} ${angle}deg, #2e4150 0)` }}
+        />
+        <div className="absolute inset-[9px] rounded-full bg-[#15212b] grid place-items-center">
+          <span className="text-[13px] font-bold text-slate-100">{pct}%</span>
         </div>
       </div>
       <div className="leading-tight">
-        <div className={`text-[20px] font-extrabold ${titleColor}`}>{title}</div>
+        <div className={`text-[17px] font-extrabold ${titleColor}`}>{title}</div>
         <div className="flex items-end gap-1 mt-1">
-          <div className="text-[44px] font-extrabold tracking-tight text-slate-100">{value}</div>
-          <div className="mb-2 text-[16px] font-semibold text-[#63d8ff]">{unit}</div>
+          <div className="text-[38px] font-extrabold tracking-tight text-slate-100">{value}</div>
+          <div className="mb-2 text-[14px] font-semibold text-[#63d8ff]">{unit}</div>
         </div>
       </div>
     </div>
   );
 };
 
+/* ============ 본문 라우터: 도넛 아래만 변경 ============ */
+const HomeContent = () => (
+  <div className="w-full px-2 mt-1 grid grid-cols-12 gap-1 pb-4">
+    <div className="col-span-3 space-y-1">
+      <AccumChart />
+      <PricePanel />
+    </div>
+
+    <div className="col-span-9 space-y-2">
+      <ScaledStage designW={2300} designH={820} className="w-full">
+        <FlowPanel />
+      </ScaledStage>
+
+      <div className="mt-3.5 flex gap-1">
+        <div className="w-2/3">
+          <MiddleGraphPanel />
+        </div>
+        <div className="flex-1">
+          <SystemLogPanel />
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+// 간단 Placeholder들(필요한 패널로 대체 예정)
+const Placeholder = ({ title, desc }) => (
+  <div className="px-4 py-10">
+    <div className="rounded-lg border border-[#2a3e4d] bg-[#15222b] p-6">
+      <div className="text-2xl font-bold mb-2 text-[#9fd6ff]">{title}</div>
+      <div className="text-slate-300">{desc}</div>
+    </div>
+  </div>
+);
+
+const PVPlaceholder = () => (
+  <div className="w-full px-2 mt-1 pb-4">
+    <Placeholder
+      title="PV 모듈 페이지"
+      desc="여기에 발전소 문자열별 발전량, 일사/온도 상관 분석, 인버터별 효율 그래프 등을 배치합니다."
+    />
+  </div>
+);
+const PCSPage = () => (
+  <div className="w-full px-2 mt-1 pb-4">
+    <Placeholder
+      title="PCS 페이지"
+      desc="PCS 상태/전환 이력, 유효/무효전력, 모드 전환 제어 영역 등을 배치합니다."
+    />
+  </div>
+);
+const BMSPage = () => (
+  <div className="w-full px-2 mt-1 pb-4">
+    <Placeholder
+      title="BMS 페이지"
+      desc="셀 밸런싱, 전압/온도 분포, 알람 이력, SOH 추정 차트 등을 배치합니다."
+    />
+  </div>
+);
+const ESSPage = () => (
+  <div className="w-full px-2 mt-1 pb-4">
+    <Placeholder
+      title="ESS 페이지"
+      desc="충방전 스케줄, SOC 한계/보호 로직, 시뮬레이터 연동 그래프 등을 배치합니다."
+    />
+  </div>
+);
+const VPPPage = () => (
+  <div className="w-full px-2 mt-1 pb-4">
+    <Placeholder
+      title="VPP 페이지"
+      desc="노드/라인 2D·3D 뷰, 전력 흐름 애니메이션, 제어 명령 대시보드 등을 배치합니다."
+    />
+  </div>
+);
+const ReportPage = () => (
+  <div className="w-full px-2 mt-1 pb-4">
+    <Placeholder
+      title="보고서 페이지"
+      desc="일/주/월 리포트 다운로드, KPI 카드, PDF 생성 버튼 등을 배치합니다."
+    />
+  </div>
+);
+const AlarmPage = () => (
+  <div className="w-full px-2 mt-1 pb-4">
+    <Placeholder
+      title="경보 페이지"
+      desc="실시간 알람 스트림, 필터/검색, Ack/Close 동작(시뮬레이션) 등을 배치합니다."
+    />
+  </div>
+);
+const SettingsPage = () => (
+  <div className="w-full px-2 mt-1 pb-4">
+    <Placeholder
+      title="설정 페이지"
+      desc="API 키/엔드포인트, 대시보드 테마, 단위/표기 형식 설정 등을 배치합니다."
+    />
+  </div>
+);
+
+const ContentRouter = ({ activeTab }) => {
+  switch (activeTab) {
+    case "HOME": return <HomeContent />;
+    case "PV": return <PVScreen />;
+    case "PCS": return <PCSPage />;
+    case "BMS": return <BMSPage />;
+    case "ESS": return <ESSPage />;
+    case "VPP": return <VPPPage />;
+    case "보고서": return <ReportPage />;
+    case "경보": return <AlarmPage />;
+    case "설정": return <SettingsPage />;
+    default: return <HomeContent />;
+  }
+};
+
 /* ============ 메인 ============ */
 export default function App() {
   const now = useClock();
+  const status = useBackendStatus (60000);
+  const [activeTab, setActiveTab] = useState("HOME");
+
+  const TabButton = ({ active, onClick, children }) => (
+    <button
+      onClick={onClick}
+      className={`h-12 flex items-center justify-center transition-colors ${
+        active ? "bg-[#1c2c39] text-[#69e3ff] font-semibold" : "hover:bg-[#1c2c39] text-[#cfe7f6]"
+      }`}
+    >
+      {children}
+    </button>
+  );
 
   return (
     <div className="min-h-screen w-screen bg-[#0c131a] text-slate-100 overflow-x-hidden">
@@ -698,7 +978,8 @@ export default function App() {
             </div>
             <div className="flex items-center gap-1">
               <Thermometer size={16} className="text-[#69e3ff]" />
-              26.0 <span className="opacity-80">℃</span>
+              <span>26.0</span>
+              <span className="opacity-80">℃</span>
             </div>
             <button className="flex items-center gap-1">
               <LogOut size={16} /> 로그아웃
@@ -711,53 +992,67 @@ export default function App() {
       {/* 상단 탭 */}
       <div className="w-full bg-[#162430] border-b border-[#2a3e4d] mt-2">
         <nav className="grid grid-cols-9 divide-x divide-[#2a3e4d]">
-          <button className="h-12 flex items-center justify-center hover:bg-[#1c2c39]">
+          <TabButton active={activeTab === "HOME"} onClick={() => setActiveTab("HOME")}>
             <Home size={18} />
-          </button>
+          </TabButton>
           {["PV", "PCS", "BMS", "ESS", "VPP", "보고서", "경보", "설정"].map((t) => (
-            <button key={t} className="h-12 text-[#63d8ff] hover:bg-[#1c2c39]">
+            <TabButton key={t} active={activeTab === t} onClick={() => setActiveTab(t)}>
               {t}
-            </button>
+            </TabButton>
           ))}
         </nav>
       </div>
 
-      {/* 상단 도넛 5개 */}
-      <div className="w-full bg-[#162430] grid grid-cols-5 divide-x divide-[#2a3e4d]">
-        <DonutTile pct={38} ring="#c7ff3a" title="발전" value="305" unit="kW" />
-        <DonutTile pct={1} ring="#38d0c9" title="충전" value="9" unit="kW" />
-        <DonutTile pct={0} ring="#d7925b" title="방전" value="0" unit="kW" />
-        <DonutTile pct={37} ring="#a08bff" title="충전" value="296" unit="kW" />
-        <div className="flex items-center px-8 py-6">
-          <div className="relative w-[94px] h-[94px] mr-6">
-            <div className="absolute inset-0 rounded-full bg-[#1c2a36] grid place-items-center">
-              <div className="w-10 h-10 rounded-full border-2 border-[#63d8ff] relative">
-                <div className="absolute -right-2 -top-2 w-5 h-5 rounded-full border-2 border-[#63d8ff]" />
+      {/* ▼▼▼ HOME 탭일 때만 도넛 표시 ▼▼▼ */}
+      {activeTab === "HOME" && (
+        <div className="w-full bg-[#162430] grid grid-cols-5 divide-x divide-[#2a3e4d]">
+          <DonutTile pct={38} ring="#c7ff3a" title="발전" value="305" unit="kW" />
+          <DonutTile pct={1} ring="#38d0c9" title="충전" value="9" unit="kW" />
+          <DonutTile pct={0} ring="#d7925b" title="방전" value="0" unit="kW" />
+          <DonutTile pct={37} ring="#a08bff" title="송전" value="296" unit="kW" />
+          <div className="flex items-center px-8 py-3">
+            <div className="relative w-[72px] h-[72px] mr-5">
+              <div className="absolute inset-0 rounded-full bg-[#1c2a36] grid place-items-center">
+                <div
+                  className="rounded-full border-2 border-[#63d8ff] relative"
+                  style={{ width: 34, height: 34 }}
+                >
+                  {/* ▼▼ self-closing div → 정상 닫힘으로 수정 ▼▼ */}
+                  <div
+                    className="absolute rounded-full border-2 border-[#63d8ff]"
+                    style={{ right: -7, top: -7, width: 13, height: 13 }}
+                  ></div>
+                  {/* ▲▲ 수정 끝 ▲▲ */}
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="text-[17px] font-extrabold text-[#69e3ff]">TEMP ▸</div>
+              <div className="flex items-end gap-1 mt-1">
+                <div className="text-[38px] font-extrabold">26</div>
+                <div className="mb-2 text-[14px] text-[#63d8ff]">℃</div>
               </div>
             </div>
           </div>
-          <div>
-            <div className="text-[18px] font-extrabold text-[#69e3ff]">TEMP ▸</div>
-            <div className="flex items-end gap-1 mt-1">
-              <div className="text-[44px] font-extrabold">26</div>
-              <div className="mb-2 text-[16px] text-[#63d8ff]">℃</div>
-            </div>
-          </div>
         </div>
-      </div>
+      )}
 
-      {/* 본문 */}
-      <div className="w-full px-6 mt-3 grid grid-cols-12 gap-3 pb-10">
-        <div className="col-span-3 space-y-3">
-          <AccumChart />
-          <PricePanel />
-        </div>
-        <div className="col-span-9">
-          <ScaledStage designW={2300} designH={560} className="w-full">
-            <FlowPanel />
-          </ScaledStage>
-        </div>
+      {/* ▼▼▼ 도넛 아래만 탭에 따라 변경 ▼▼▼ */}
+      {/* ★ ContentRouter 대신 인라인 조건부 렌더링 */}
+      <div className="w-full">
+        {activeTab === "HOME" && <HomeContent />}
+        {activeTab === "PV" && <PVScreen />}{/* PV 탭에서 새 페이지 컴포넌트 */}
+        {activeTab === "PCS" && <PCSPage />}
+        {activeTab === "BMS" && <BMSPage />}
+        {activeTab === "ESS" && <ESSPage />}
+        {activeTab === "VPP" && <VPPPage />}
+        {activeTab === "보고서" && <ReportPage />}
+        {activeTab === "경보" && <AlarmPage />}
+        {activeTab === "설정" && <SettingsPage />}
       </div>
+      {/* ★ 변경 끝 */}
+
+      {/* ★ 변경 끝 */}
     </div>
   );
 }
