@@ -1,5 +1,7 @@
 // src/App.jsx
 import PVScreen from "./pages/PVPage";
+import ESSPage from "./pages/ESSPage";
+import VPPPage from "./pages/VPPPage";
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import {
   Home,
@@ -180,16 +182,45 @@ const TowerIcon = ({ w = 210, className = "" }) => (
 );
 
 /* ============ 좌측 누적 전력량 (정확 정렬 버전) ============ */
-const AccumChart = () => {
+const AccumChart = ({ status }) => {
   const max = 6000;
   const ticks = [0, 2000, 4000, 6000];
 
+  // 안전한 숫자 변환 유틸
+  const N = (v, d = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+
+  // status 매핑 (없으면 0 유지)
+  // 단위: 그래프는 전부 kWh로 통일. (제약량은 MWh -> kWh로 변환)
+  const gen_today_kwh   = N(status?.energy?.generation_today_kwh, 0);
+  const gen_yday_kwh    = N(status?.energy?.generation_yday_kwh, 0);
+
+  const ess_chg_today   = N(status?.energy?.ess_charge_today_kwh, 0);
+  const ess_chg_yday    = N(status?.energy?.ess_charge_yday_kwh, 0);
+
+  const ess_dis_today   = N(status?.energy?.ess_discharge_today_kwh, 0);
+  const ess_dis_yday    = N(status?.energy?.ess_discharge_yday_kwh, 0);
+
+  const vpp_shed_today  = N(status?.energy?.vpp_shed_today_kwh, 0);
+  const vpp_shed_yday   = N(status?.energy?.vpp_shed_yday_kwh, 0);
+
+  // 출력제어: MWh → kWh 환산
+  const curtail_today_mwh = N(status?.curtailment?.actual_cum_today, 0);
+  const curtail_yday_mwh  = N(status?.curtailment?.actual_yday_total, 0);
+  const curtail_today_kwh = curtail_today_mwh * 1000;
+  const curtail_yday_kwh  = curtail_yday_mwh * 1000;
+
+  // 차트 항목 (전일/금일 비교 유지)
   const data = [
-    { name: "발전", prev: 4045.8, today: 3330.7, color: "#c5ff46" },
-    { name: "충전", prev: 2670.7, today: 1712.1,  color: "#63d8ff" },
-    { name: "방전", prev: 2269.4, today: 543.2,   color: "#f1a256" },
-    { name: "송전", prev: 1375.0, today: 288.5, color: "#ae8bff" },
+    { name: "발전량", prev: gen_yday_kwh,     today: gen_today_kwh,  color: "#c5ff46" },
+    { name: "ESS 충전",    prev: ess_chg_yday,     today: ess_chg_today,  color: "#63d8ff" },
+    { name: "ESS 방전",    prev: ess_dis_yday,     today: ess_dis_today,  color: "#f1a256" },
+    { name: "VPP 감축",    prev: vpp_shed_yday,    today: vpp_shed_today, color: "#ae8bff" },
+    { name: "출력제어 누적", prev: curtail_yday_kwh, today: curtail_today_kwh, color: "#ff9ab3" },
   ];
+
 
   const BAR_H = 20;
   const BAR_GAP = 8;
@@ -225,20 +256,11 @@ const AccumChart = () => {
         <span className="text-[14px] font-semibold text-[#d7e9f6]">누적 전력량</span>
       </div>
 
-      <div className="px-4 py-2 bg-[#172531] border-b border-[#22394b] flex items-center justify-between">
-        <div className="flex items-center gap-2 text-[12px]">
-          <span className="px-2 py-1 rounded bg-[#243646] border border-[#2a3f50] text-[#e8f5ff]">일</span>
-          <span className="px-2 py-1 rounded border border-transparent text-slate-300">월</span>
-          <span className="px-2 py-1 rounded border border-transparent text-slate-300">년</span>
-        </div>
-        <div className="text-[12px] text-slate-300">단위 kWh</div>
-      </div>
-
-      <div ref={chartRef} className="relative px-4 pt-6 pb-4 h-[360px]">
+      <div ref={chartRef} className="relative px-4 pt-6 pb-4 h-[375px]">
         {ticks.map((t) => (
           <div
             key={t}
-            className="absolute top-0 bottom-12 border-r"
+            className="absolute top-0 bottom-0 border-r"
             style={{ left: `${tickX(t)}px`, borderColor: "#2a3f50", opacity: 0.35 }}
           />
         ))}
@@ -298,7 +320,7 @@ const AccumChart = () => {
         {ticks.map((t) => (
           <span
             key={`label-${t}`}
-            className="absolute bottom-12 text-[11px] text-slate-300"
+            className="absolute bottom-0 text-[11px] text-slate-300"
             style={{
               left: `${tickX(t)}px`,
               transform: "translateX(-50%)",
@@ -308,7 +330,7 @@ const AccumChart = () => {
           </span>
         ))}
 
-        <div className="absolute bottom-0 right-0 left-0 mb-2 flex justify-center gap-8 text-[13px]">
+        <div className="mt-12 flex justify-center gap-8 text-[13px]">
           <div className="flex items-center gap-2">
             <span className="w-4 h-2 rounded-sm" style={prevStyle("#9fb6c9")} />
             <span className="text-slate-200">전일</span>
@@ -318,39 +340,57 @@ const AccumChart = () => {
             <span className="text-slate-200">금일</span>
           </div>
         </div>
+
       </div>
     </div>
   );
 };
 
 /* ============ 좌측 하단: 금액 패널 (그래프 제거, 2+1 레이아웃) ============ */
-const PricePanel = () => {
+const PricePanel = ({ status }) => {
+  const smpNow  = Number(status?.economics?.smp_now ?? 0)
+  const smpAvg  = Number(status?.economics?.smp_avg ?? 0)
+  const recNow  = Number(status?.economics?.rec_now ?? 0)
+  const updated = status?.economics?.updated_at ?? ""
+  const sumNow  = smpNow + recNow
+
   return (
-    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b] p-3 h-[199px]">
+    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b] p-3 h-[215px]">
+      {/* 상단 2카드: SMP / REC */}
       <div className="grid grid-cols-2 gap-4">
         <div className="rounded-md bg-[#172633] border border-[#244255] p-4">
-          <div className="text-[12px] text-slate-300">SMP 금액</div>
-          <div className="mt-1 text-2xl font-bold tracking-tight">
-            0 <span className="text-slate-300 text-[12px]">원/kWh</span>
+          <div className="flex items-center justify-between">
+            <div className="text-[12px] text-slate-300">SMP (현재/일평균)</div>
+            <div className="text-[11px] text-slate-400">{updated && `${updated} 갱신`}</div>
           </div>
-        </div>
-        <div className="rounded-md bg-[#172633] border border-[#244255] p-4">
-          <div className="text-[12px] text-slate-300">REC 금액</div>
           <div className="mt-1 text-2xl font-bold tracking-tight">
-            0 <span className="text-slate-300 text-[12px]">원/kWh</span>
+            {smpNow.toLocaleString()} <span className="text-slate-300 text-[12px]">원/kWh</span>
+          </div>
+          <div className="mt-1 text-[12px] text-slate-400">평균 {smpAvg.toLocaleString()} 원/kWh</div>
+        </div>
+
+        <div className="rounded-md bg-[#172633] border border-[#244255] p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-[12px] text-slate-300">REC (현물)</div>
+            <div className="text-[11px] text-slate-400">{updated && `${updated} 갱신`}</div>
+          </div>
+          <div className="mt-1 text-2xl font-bold tracking-tight">
+            {recNow.toLocaleString()} <span className="text-slate-300 text-[12px]">원/kWh</span>
           </div>
         </div>
       </div>
 
+      {/* 하단 합계 */}
       <div className="mt-3 rounded-md bg-[#14222c] border border-[#22394b] p-4 flex items-baseline justify-between">
         <div className="text-[20px] text-slate-300">SMP + REC 금액</div>
         <div className="text-4xl font-black tracking-tight leading-none">
-          0 <span className="text-slate-300 text-[16px] font-semibold ml-1">원/kWh</span>
+          {sumNow.toLocaleString()} <span className="text-slate-300 text-[16px] font-semibold ml-1">원/kWh</span>
         </div>
       </div>
     </div>
-  );
-};
+  )
+}
+
 
 /* ============ 하단: 실시간 그래프 패널 (상단 헤더 + 새로고침 버튼) ============ */
 const MiddleGraphPanel = () => {
@@ -372,7 +412,7 @@ const MiddleGraphPanel = () => {
     .join(" ");
 
   return (
-    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b]">
+    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b] h-[215px]">
       <div className="px-3 py-2 bg-[#14222c] border-b border-[#22394b] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Activity size={16} className="text-[#9fd6ff]" />
@@ -425,7 +465,7 @@ const SystemLogPanel = () => {
     lv === "warn" ? "#ffcf77" : lv === "error" ? "#ff8b8b" : "#8fd3ff";
 
   return (
-    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b] h-[199.5px] flex flex-col">
+    <div className="rounded-[1px] bg-[#1a2a36] border border-[#22394b] h-[215px] flex flex-col">
       <div className="px-3 py-2 bg-[#14222c] border-b border-[#22394b] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Bell size={16} className="text-[#9fd6ff]" />
@@ -495,7 +535,7 @@ const MetricRow = ({ dot, label, val, unit, size = "md" }) => {
   );
 };
 
-const FlowPanel = () => {
+const FlowPanel = ({ status }) => {
   const STAGE = { w: 2300, h: 838 }; // 높이 보정
   const L = { x: 0, y: 670, w: 980, h: 140 };
   const M = { x: L.x + L.w + 20, y: 670, w: 520, h: 140 };
@@ -804,12 +844,12 @@ const DonutTile = ({
   const angle = Math.max(0, Math.min(100, pct)) * 3.6;
   return (
     <div className="flex items-center px-8 py-3">
-      <div className="relative w-[72px] h-[72px] mr-5">
+      <div className="relative w-[88px] h-[88px] mr-5">
         <div
           className="absolute inset-0 rounded-full"
           style={{ background: `conic-gradient(${ring} ${angle}deg, #2e4150 0)` }}
         />
-        <div className="absolute inset-[9px] rounded-full bg-[#15212b] grid place-items-center">
+        <div className="absolute inset-[12px] rounded-full bg-[#15212b] grid place-items-center">
           <span className="text-[13px] font-bold text-slate-100">{pct}%</span>
         </div>
       </div>
@@ -825,16 +865,16 @@ const DonutTile = ({
 };
 
 /* ============ 본문 라우터: 도넛 아래만 변경 ============ */
-const HomeContent = () => (
+const HomeContent = ({ status }) => (
   <div className="w-full px-2 mt-1 grid grid-cols-12 gap-1 pb-4">
     <div className="col-span-3 space-y-1">
-      <AccumChart />
-      <PricePanel />
+      <AccumChart status={status}/>
+      <PricePanel status={status}/>
     </div>
 
     <div className="col-span-9 space-y-2">
       <ScaledStage designW={2300} designH={820} className="w-full">
-        <FlowPanel />
+        <FlowPanel status={status}/>
       </ScaledStage>
 
       <div className="mt-3.5 flex gap-1">
@@ -880,22 +920,6 @@ const BMSPage = () => (
     <Placeholder
       title="BMS 페이지"
       desc="셀 밸런싱, 전압/온도 분포, 알람 이력, SOH 추정 차트 등을 배치합니다."
-    />
-  </div>
-);
-const ESSPage = () => (
-  <div className="w-full px-2 mt-1 pb-4">
-    <Placeholder
-      title="ESS 페이지"
-      desc="충방전 스케줄, SOC 한계/보호 로직, 시뮬레이터 연동 그래프 등을 배치합니다."
-    />
-  </div>
-);
-const VPPPage = () => (
-  <div className="w-full px-2 mt-1 pb-4">
-    <Placeholder
-      title="VPP 페이지"
-      desc="노드/라인 2D·3D 뷰, 전력 흐름 애니메이션, 제어 명령 대시보드 등을 배치합니다."
     />
   </div>
 );
@@ -945,6 +969,39 @@ export default function App() {
   const status = useBackendStatus (60000);
   const [activeTab, setActiveTab] = useState("HOME");
 
+  // ── 상단 도넛 표시값/퍼센트 계산 (status 미연동 시에도 기본값 표시)
+const predVal = useMemo(() => Number(status?.curtailment?.pred_today ?? 0).toFixed(1), [status])
+const predBase = Number(status?.curtailment?.pred_daily_max ?? status?.curtailment?.pred_today ?? 0) || 1
+const predPct = useMemo(() => Math.max(0, Math.min(100, Math.round((Number(predVal) / predBase) * 100))), [predVal, predBase])
+
+const cumVal = useMemo(() => Number(status?.curtailment?.actual_cum_today ?? 0).toFixed(1), [status])
+const cumPct = useMemo(() => {
+  const p = Number(status?.curtailment?.pred_today ?? 0) || 1
+  return Math.max(0, Math.min(100, Math.round((Number(cumVal) / p) * 100)))
+}, [cumVal, status])
+
+// 예상 출력제어 '집중' 시간대 (예: "13:00~15:00") + 위험도 퍼센트
+const peakWinStr = useMemo(() => {
+  const arr = status?.curtailment?.peak_windows
+  if (Array.isArray(arr) && arr.length) {
+    const { start, end } = arr[0]
+    const fmt = (s) => (typeof s === "string" ? s : "")
+    return `${fmt(start)}~${fmt(end)}`
+  }
+  return "-"
+}, [status])
+const peakRiskPct = useMemo(() => Math.max(0, Math.min(100, Math.round(Number(status?.curtailment?.peak_risk_pct ?? 0)))), [status])
+
+// ESS: 현재 전력(kW) + SOC(%)
+const essPower = useMemo(() => Math.round(Number(status?.ess?.power_kw ?? 0)), [status])
+const socPct = useMemo(() => Math.max(0, Math.min(100, Math.round(Number(status?.ess?.soc ?? 0)))), [status])
+
+// VPP: 활성/전체 → 가동률(%)
+const vppActive = Number(status?.vpp?.active_nodes ?? 0)
+const vppTotal  = Number(status?.vpp?.total_nodes ?? 0)
+const vppPct    = useMemo(() => (vppTotal ? Math.round((vppActive / vppTotal) * 100) : 0), [vppActive, vppTotal])
+
+  
   const TabButton = ({ active, onClick, children }) => (
     <button
       onClick={onClick}
@@ -1003,44 +1060,61 @@ export default function App() {
         </nav>
       </div>
 
-      {/* ▼▼▼ HOME 탭일 때만 도넛 표시 ▼▼▼ */}
-      {activeTab === "HOME" && (
-        <div className="w-full bg-[#162430] grid grid-cols-5 divide-x divide-[#2a3e4d]">
-          <DonutTile pct={38} ring="#c7ff3a" title="발전" value="305" unit="kW" />
-          <DonutTile pct={1} ring="#38d0c9" title="충전" value="9" unit="kW" />
-          <DonutTile pct={0} ring="#d7925b" title="방전" value="0" unit="kW" />
-          <DonutTile pct={37} ring="#a08bff" title="송전" value="296" unit="kW" />
-          <div className="flex items-center px-8 py-3">
-            <div className="relative w-[72px] h-[72px] mr-5">
-              <div className="absolute inset-0 rounded-full bg-[#1c2a36] grid place-items-center">
-                <div
-                  className="rounded-full border-2 border-[#63d8ff] relative"
-                  style={{ width: 34, height: 34 }}
-                >
-                  {/* ▼▼ self-closing div → 정상 닫힘으로 수정 ▼▼ */}
-                  <div
-                    className="absolute rounded-full border-2 border-[#63d8ff]"
-                    style={{ right: -7, top: -7, width: 13, height: 13 }}
-                  ></div>
-                  {/* ▲▲ 수정 끝 ▲▲ */}
-                </div>
-              </div>
-            </div>
-            <div>
-              <div className="text-[17px] font-extrabold text-[#69e3ff]">TEMP ▸</div>
-              <div className="flex items-end gap-1 mt-1">
-                <div className="text-[38px] font-extrabold">26</div>
-                <div className="mb-2 text-[14px] text-[#63d8ff]">℃</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+    {/* ▼▼▼ HOME 탭일 때만 도넛 표시 ▼▼▼ */}
+    {activeTab === "HOME" && (
+      <div className="w-full bg-[#162430] grid grid-cols-5 divide-x divide-[#2a3e4d]">
+        {/* ① 예측 출력제어량 (금일 예측 총량) */}
+        <DonutTile
+          pct={predPct ?? 0}            // [1]에서 만든 파생값(없으면 0)
+          ring="#a47dff"
+          title="예측 출력제어량"
+          value={predVal ?? "0.0"}      // 예: "12.4"
+          unit="MWh"
+        />
+
+        {/* ② 누적 출력제어량 (금일 현재까지 실측 누적) */}
+        <DonutTile
+          pct={cumPct ?? 0}
+          ring="#ffb84d"
+          title="누적 출력제어량"
+          value={cumVal ?? "0.0"}
+          unit="MWh"
+        />
+
+        {/* ③ 예상 제약 시간대 (집중 구간) */}
+        <DonutTile
+          pct={peakRiskPct ?? 0}        // 위험도/집중도 % (없으면 0)
+          ring="#ff6b6b"
+          title="예상 제약 시간대"
+          value={peakWinStr ?? "-"}     // 예: "13:00~15:00"
+          unit=""
+        />
+
+        {/* ④ ESS 운전 (현재 충·방전 전력) */}
+        <DonutTile
+          pct={socPct ?? 0}             // SOC %
+          ring="#00c2a8"
+          title="ESS 운전"
+          value={(essPower ?? 0).toString()} // 예: "35"
+          unit="kW"
+        />
+
+        {/* ⑤ VPP 가동률 (활성 노드 비율) */}
+        <DonutTile
+          pct={vppPct ?? 0}             // 가동률 %
+          ring="#46b0ff"
+          title="VPP 가동률"
+          value={(vppPct ?? 0).toString()}
+          unit="%"
+        />
+      </div>
+    )}
+
 
       {/* ▼▼▼ 도넛 아래만 탭에 따라 변경 ▼▼▼ */}
       {/* ★ ContentRouter 대신 인라인 조건부 렌더링 */}
       <div className="w-full">
-        {activeTab === "HOME" && <HomeContent />}
+        {activeTab === "HOME" && <HomeContent status={status}/>}
         {activeTab === "PV" && <PVScreen />}{/* PV 탭에서 새 페이지 컴포넌트 */}
         {activeTab === "PCS" && <PCSPage />}
         {activeTab === "BMS" && <BMSPage />}
