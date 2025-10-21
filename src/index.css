@@ -3,3 +3,29 @@
 /* Vite 기본 스타일 제거 + 전체 화면 채우기 */
 html, body, #root { height: 100%; }
 #root { max-width: none; margin: 0; padding: 0; }
+
+@layer base {
+    html, body { font-family: "Noto Sans KR", system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  }
+
+/* PDF 전용 */
+#report-root { background: #fff; color: #000; padding: 24px; }
+.page-break { break-after: page; }
+
+/* 색상 보존(브라우저 인쇄 품질 개선) */
+@media print {
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+#report-root {
+    background: #162430; /* 어두운 테마 */
+    color: #cfe7f6;
+    padding: 24px;
+  }
+  
+  @media print {
+    #report-root {
+      background: #fff !important;
+      color: #000 !important;
+    }
+  }
+  

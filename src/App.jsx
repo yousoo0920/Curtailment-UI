@@ -2,6 +2,7 @@
 import PVScreen from "./pages/PVPage";
 import ESSPage from "./pages/ESSPage";
 import VPPPage from "./pages/VPPPage";
+import ReportPage from "./pages/ReportPage";
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import {
   Home,
@@ -920,14 +921,6 @@ const BMSPage = () => (
     <Placeholder
       title="BMS 페이지"
       desc="셀 밸런싱, 전압/온도 분포, 알람 이력, SOH 추정 차트 등을 배치합니다."
-    />
-  </div>
-);
-const ReportPage = () => (
-  <div className="w-full px-2 mt-1 pb-4">
-    <Placeholder
-      title="보고서 페이지"
-      desc="일/주/월 리포트 다운로드, KPI 카드, PDF 생성 버튼 등을 배치합니다."
     />
   </div>
 );
