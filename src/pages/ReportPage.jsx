@@ -80,7 +80,7 @@ export default function ReportPage() {
     avail: true,
     energy: true,
     concl: true,
-    log: false,
+    log: true,
   });
   const toggle = (k) => setSelected((p) => ({ ...p, [k]: !p[k] }));
 
