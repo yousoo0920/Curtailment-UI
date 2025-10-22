@@ -10,16 +10,20 @@ import {
   Legend,
 } from "recharts";
 
+/* ========== 유틸 ========== */
 const pad = (n) => String(n).padStart(2, "0");
 const nowStr = () => {
   const d = new Date();
-  return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`;
 };
 const nf = (v, d = 1) => {
   const n = Number(v);
   return Number.isFinite(n) ? n.toFixed(d) : "-";
 };
 
+/* ========== 더미 시리즈 ========== */
 const buildDummyCurtail = () =>
   Array.from({ length: 24 }, (_, h) => ({
     hour: `${h}:00`,
@@ -32,40 +36,70 @@ const buildDummyESS = () =>
     discharge: Math.max(0, Math.round((Math.max(0, Math.sin(h / 2.2) * 7 + 6)) * 10) / 10),
   }));
 
+/* ========== 차트 래퍼 ========== */
+/** 인쇄/캡처 시 우측 여유 확보(–20px)로 SVG 클리핑 방지 */
 function ChartBox({ height = 260, forPdf = false, children }) {
   const hostRef = useRef(null);
   const [width, setWidth] = useState(0);
+
   useLayoutEffect(() => {
     const el = hostRef.current;
     if (!el) return;
+
     const measure = () => {
       const raw = el.clientWidth || el.getBoundingClientRect().width || 0;
-      const w = Math.max(0, Math.floor(raw * (forPdf ? 0.97 : 1)) - (forPdf ? 12 : 0));
+      const w = Math.max(0, Math.floor(raw) - (forPdf ? 20 : 0)); // ← 여기서 여유
       if (w && w !== width) setWidth(w);
     };
+
     measure();
+
+    // 인쇄/캡처 모드에서는 한 번만 측정
     if (forPdf) return;
+
     let rid = 0;
     const ro = new ResizeObserver(() => {
       cancelAnimationFrame(rid);
       rid = requestAnimationFrame(measure);
     });
     ro.observe(el);
+
     return () => {
       cancelAnimationFrame(rid);
       ro.disconnect();
     };
   }, [forPdf, width]);
-  return <div ref={hostRef} style={{ height, width: "100%", overflow: "visible" }}>{width > 0 ? children(width, height) : null}</div>;
+
+  return (
+    <div ref={hostRef} style={{ height, width: "100%", overflow: "visible", boxSizing: "border-box" }}>
+      {width > 0 ? children(width, height) : null}
+    </div>
+  );
 }
 
+/* ========== 페이지 컴포넌트 ========== */
 export default function ReportPage() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [theme, setTheme] = useState("dark");
-  const [pdfMode, setPdfMode] = useState(false);
+
+  // 테마/모드
+  const [theme, setTheme] = useState("dark"); // "dark" | "light"
+  const [pdfMode, setPdfMode] = useState(false);      // html2canvas 캡처용
+  const [printMode, setPrintMode] = useState(false);  // window.print() 인쇄 감지
   const [pdfKey, setPdfKey] = useState(0);
 
+  useEffect(() => {
+    const onBefore = () => setPrintMode(true);
+    const onAfter = () => setPrintMode(false);
+    window.addEventListener("beforeprint", onBefore);
+    window.addEventListener("afterprint", onAfter);
+    return () => {
+      window.removeEventListener("beforeprint", onBefore);
+      window.removeEventListener("afterprint", onAfter);
+    };
+  }, []);
+
+  // 섹션 선택
   const [selected, setSelected] = useState({
     meta: true,
     exec: true,
@@ -80,10 +114,11 @@ export default function ReportPage() {
     avail: true,
     energy: true,
     concl: true,
-    log: true,
+    log: false,
   });
   const toggle = (k) => setSelected((p) => ({ ...p, [k]: !p[k] }));
 
+  /* ----- 데이터 매핑 ----- */
   const plant = {
     name: status?.site?.name ?? "예시 태양광·ESS 플랜트",
     location: status?.site?.location ?? "KOR",
@@ -144,6 +179,7 @@ export default function ReportPage() {
     curtail_kWh: Math.round(Number(status?.curtailment?.actual_cum_today ?? 0) * 1000),
   };
 
+  /* ----- 차트 데이터 ----- */
   const dummyCurtailRef = useRef(buildDummyCurtail());
   const dummyESSRef = useRef(buildDummyESS());
   const [chartCurtail, setChartCurtail] = useState(dummyCurtailRef.current);
@@ -173,6 +209,7 @@ export default function ReportPage() {
     }
   }, [status?.ess?.charge_kw_series, status?.ess?.discharge_kw_series, chartESS]);
 
+  /* ----- 섹션 목록 ----- */
   const sections = useMemo(() => {
     const list = [
       selected.meta && { id: "meta", title: "플랜트 개요" },
@@ -193,20 +230,27 @@ export default function ReportPage() {
     return list.map((s, i) => ({ ...s, no: i + 1 }));
   }, [selected]);
 
+  /* ----- PDF(캡처) 저장 ----- */
   const handleExport = async () => {
     if (loading) return;
     setLoading(true);
     setPdfMode(true);
     setTheme("light");
     setPdfKey((k) => k + 1);
+
     const root = document.getElementById("report-root");
     const prev = { bg: root.style.background, color: root.style.color };
     root.style.background = "#ffffff";
     root.style.color = "#000000";
+
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
     const d = new Date();
-    const fileName = `report_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}.pdf`;
+    const fileName = `report_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(
+      d.getHours()
+    )}-${pad(d.getMinutes())}.pdf`;
     await exportPdf(root, fileName);
+
     root.style.background = prev.bg;
     root.style.color = prev.color;
     setTheme("dark");
@@ -214,6 +258,7 @@ export default function ReportPage() {
     setLoading(false);
   };
 
+  /* ----- 초기 데이터 로드 ----- */
   useEffect(() => {
     const load = async () => {
       try {
@@ -225,33 +270,33 @@ export default function ReportPage() {
     load();
   }, []);
 
+  /* ----- 테마 색상 ----- */
   const color = theme === "dark" ? "#dfeaf1" : "#1a1a1a";
   const sub = theme === "dark" ? "rgba(97,138,164,0.95)" : "#616a73";
   const border = theme === "dark" ? "#2a3e4d" : "#dfe6ee";
   const cardBg = theme === "dark" ? "#14222c" : "#fff";
   const gridColor = theme === "dark" ? "rgba(255,255,255,0.12)" : "#e6eef5";
 
+  /* ----- 공통 섹션 스타일 ----- */
   const sectionStyle = {
     marginBottom: 26,
-    padding: pdfMode ? 16 : 12,
+    padding: 18,
     background: cardBg,
     border: `1px solid ${border}`,
     borderRadius: 10,
     breakInside: "avoid",
     pageBreakInside: "avoid",
     WebkitRegionBreakInside: "avoid",
+    boxSizing: "border-box",
   };
 
+  // html2canvas 캡처 모드에서만 폭 고정
   const rootFixed = pdfMode
-    ? {
-        width: 790,
-        maxWidth: 790,
-        margin: "0 auto",
-        padding: 20,
-      }
+    ? { width: 790, maxWidth: 790, margin: "0 auto", padding: 20 }
     : {};
 
   const graphsGridCols = pdfMode ? "1fr" : "1fr 1fr";
+  const locked = pdfMode || printMode; // 인쇄/캡처 중엔 차트 폭/마진 고정
 
   return (
     <div className="w-full px-2 mt-1 pb-4">
@@ -263,53 +308,57 @@ export default function ReportPage() {
           padding: 28,
           borderRadius: 10,
           lineHeight: 1.7,
+          boxSizing: "border-box",
           ...rootFixed,
         }}
       >
+        {/* ===== 헤더 ===== */}
         <header style={{ position: "relative", marginBottom: 22, paddingRight: 480 }}>
           <div style={{ fontSize: 18, color: sub, marginBottom: 6 }}>일일 운영 리포트</div>
           <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.02em", margin: 0, whiteSpace: "nowrap", wordBreak: "keep-all" }}>
             {"Curtailment\u00A0/\u00A0ESS\u00B7VPP"}
           </h1>
           <div style={{ fontSize: 13, color: sub, marginTop: 4 }}>생성일시: {nowStr()}</div>
+
+          {/* 우상단 컨트롤(인쇄/캡처 제외) */}
           <div
             data-html2canvas-ignore="true"
+            className="no-print"
             style={{ position: "absolute", right: 0, top: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, maxWidth: 520 }}
           >
             <div style={{ display: "grid", gridTemplateColumns: "repeat(7, max-content)", columnGap: 14, rowGap: 6, justifyContent: "end" }}>
               {[
-                ["meta", "개요"],
-                ["exec", "요약"],
-                ["kpi", "KPI"],
-                ["graphs", "그래프"],
-                ["curtail", "KPX"],
-                ["pv", "PV"],
-                ["ess", "ESS"],
-                ["vpp", "VPP"],
-                ["econ", "가격/수익"],
-                ["alarms", "알람"],
-                ["avail", "가용률"],
-                ["energy", "밸런스"],
-                ["concl", "결론"],
-                ["log", "로그"],
+                ["meta", "개요"], ["exec", "요약"], ["kpi", "KPI"], ["graphs", "그래프"], ["curtail", "KPX"], ["pv", "PV"], ["ess", "ESS"],
+                ["vpp", "VPP"], ["econ", "가격/수익"], ["alarms", "알람"], ["avail", "가용률"], ["energy", "밸런스"], ["concl", "결론"], ["log", "로그"],
               ].map(([key, label]) => (
                 <label key={key} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
                   <input type="checkbox" checked={selected[key]} onChange={() => toggle(key)} /> {label}
                 </label>
               ))}
             </div>
-            <button
-              type="button"
-              onClick={handleExport}
-              disabled={loading}
-              className="px-3 py-2 rounded border border-[#2a3e4d] bg-[#15222b] text-[#cfe7f6]"
-              style={{ width: 120, textAlign: "center" }}
-            >
-              {loading ? "생성 중..." : "PDF 출력"}
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="px-3 py-2 rounded border border-[#2a3e4d] bg-[#15222b] text-[#cfe7f6]"
+                style={{ width: 120, textAlign: "center" }}
+              >
+                인쇄/PDF
+              </button>
+              <button
+                type="button"
+                onClick={handleExport}
+                disabled={loading}
+                className="px-3 py-2 rounded border border-[#2a3e4d] bg-[#15222b] text-[#cfe7f6]"
+                style={{ width: 120, textAlign: "center" }}
+              >
+                {loading ? "생성 중..." : "PDF(캡처)"}
+              </button>
+            </div>
           </div>
         </header>
 
+        {/* ===== 섹션 렌더링 ===== */}
         {sections.map((s) => {
           if (s.id === "meta") {
             return (
@@ -391,11 +440,18 @@ export default function ReportPage() {
                 <h2 style={{ fontSize: 18, fontWeight: 800, margin: "0 0 12px", whiteSpace: "nowrap", wordBreak: "keep-all" }}>
                   {s.no}. {"그래프: 출력제어 / ESS\u00A0\u00B7\u00A0방전"}
                 </h2>
-                <div style={{ display: "grid", gridTemplateColumns: graphsGridCols, gap: 12 }}>
-                  <div style={{ border: `1px solid ${border}`, borderRadius: 8, padding: 12, overflow: "visible", breakInside: "avoid", pageBreakInside: "avoid" }}>
-                    <ChartBox height={260} forPdf={pdfMode}>
+                <div className="graphs-grid" style={{ display: "grid", gridTemplateColumns: graphsGridCols, gap: 12 }}>
+                  {/* 출력제어 */}
+                  <div className="card" style={{ border: `1px solid ${border}`, borderRadius: 8, padding: (pdfMode||printMode) ? 14 : 12, overflow: "visible" }}>
+                    <ChartBox height={(pdfMode||printMode) ? 220 : 260} forPdf={pdfMode||printMode}>
                       {(w, h) => (
-                        <RLineChart key={`curtail-${pdfKey}-${pdfMode ? "pdf" : "screen"}`} width={w} height={h} data={chartCurtail} margin={{ top: 6, right: 18, left: 10, bottom: 12 }}>
+                        <RLineChart
+                          key={`curtail-${pdfKey}-${pdfMode||printMode ? "locked" : "screen"}`}
+                          width={w}
+                          height={h}
+                          data={chartCurtail}
+                          margin={{ top: 6, right: 30, left: 10, bottom: 14 }}
+                        >
                           <CartesianGrid stroke={gridColor} strokeDasharray="3 3" />
                           <XAxis dataKey="hour" tick={{ fill: color, fontSize: 11 }} preserveStartEnd />
                           <YAxis tick={{ fill: color, fontSize: 11 }} />
@@ -406,10 +462,18 @@ export default function ReportPage() {
                       )}
                     </ChartBox>
                   </div>
-                  <div style={{ border: `1px solid ${border}`, borderRadius: 8, padding: 12, overflow: "visible", breakInside: "avoid", pageBreakInside: "avoid" }}>
-                    <ChartBox height={260} forPdf={pdfMode}>
+
+                  {/* ESS 충/방전 */}
+                  <div className="card" style={{ border: `1px solid ${border}`, borderRadius: 8, padding: (pdfMode||printMode) ? 14 : 12, overflow: "visible" }}>
+                    <ChartBox height={(pdfMode||printMode) ? 220 : 260} forPdf={pdfMode||printMode}>
                       {(w, h) => (
-                        <RLineChart key={`ess-${pdfKey}-${pdfMode ? "pdf" : "screen"}`} width={w} height={h} data={chartESS} margin={{ top: 6, right: 18, left: 10, bottom: 10 }}>
+                        <RLineChart
+                          key={`ess-${pdfKey}-${pdfMode||printMode ? "locked" : "screen"}`}
+                          width={w}
+                          height={h}
+                          data={chartESS}
+                          margin={{ top: 6, right: 30, left: 10, bottom: 14 }}
+                        >
                           <CartesianGrid stroke={gridColor} strokeDasharray="3 3" />
                           <XAxis dataKey="hour" tick={{ fill: color, fontSize: 11 }} preserveStartEnd />
                           <YAxis tick={{ fill: color, fontSize: 11 }} />
@@ -563,13 +627,17 @@ export default function ReportPage() {
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>SMP (원/kWh)</td>
                       <td style={{ padding: 12, textAlign: "right", borderBottom: `1px solid ${border}` }}>{smpNow.toLocaleString()}</td>
                       <td style={{ padding: 12, textAlign: "right", borderBottom: `1px solid ${border}` }}>{smpAvg.toLocaleString()}</td>
-                      <td style={{ padding: 12, textAlign: "right", borderBottom: `1px solid ${border}` }}>{(smpNow - smpAvg >= 0 ? "+" : "") + nf(((smpNow - smpAvg) / smpAvg) * 100)}%</td>
+                      <td style={{ padding: 12, textAlign: "right", borderBottom: `1px solid ${border}` }}>
+                        {(smpNow - smpAvg >= 0 ? "+" : "") + nf(((smpNow - smpAvg) / smpAvg) * 100)}%
+                      </td>
                     </tr>
                     <tr>
                       <td style={{ padding: 12 }}>REC (원/kWh)</td>
                       <td style={{ padding: 12, textAlign: "right" }}>{recNow.toLocaleString()}</td>
                       <td style={{ padding: 12, textAlign: "right" }}>{recAvg.toLocaleString()}</td>
-                      <td style={{ padding: 12, textAlign: "right" }}>{(recNow - recAvg >= 0 ? "+" : "") + nf(((recNow - recAvg) / recAvg) * 100)}%</td>
+                      <td style={{ padding: 12, textAlign: "right" }}>
+                        {(recNow - recAvg >= 0 ? "+" : "") + nf(((recNow - recAvg) / recAvg) * 100)}%
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -717,13 +785,15 @@ export default function ReportPage() {
                         { time: "2025-10-21 10:01", scope: "BMS", msg: "NPS Normal" },
                         { time: "2025-10-21 09:57", scope: "PCS", msg: "INV RUN" },
                         { time: "2025-10-21 09:40", scope: "VPP", msg: "연계 정상" },
-                      ]).slice(0, 50).map((r, i) => (
-                      <tr key={i}>
-                        <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{r.time}</td>
-                        <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{r.scope}</td>
-                        <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{r.msg}</td>
-                      </tr>
-                    ))}
+                      ])
+                      .slice(0, 50)
+                      .map((r, i) => (
+                        <tr key={i}>
+                          <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{r.time}</td>
+                          <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{r.scope}</td>
+                          <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{r.msg}</td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </section>
