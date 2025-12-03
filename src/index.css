@@ -1,14 +1,23 @@
 @import "tailwindcss";
 
+/* =========================
+   기본
+========================= */
 html, body, #root { height: 100%; }
 #root { max-width: none; margin: 0; padding: 0; }
 
 @layer base {
-  html, body { font-family: "Noto Sans KR", system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  html, body {
+    font-family: "Noto Sans KR", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
 }
 
-/* 화면(다크) 기본 */
+/* =========================
+   화면(다크)
+========================= */
 #report-root {
+  position: relative;
+  isolation: isolate;
   background: #162430;
   color: #cfe7f6;
   padding: 24px;
@@ -17,60 +26,96 @@ html, body, #root { height: 100%; }
 
 .page-break { break-after: page; }
 
-/* ===== 인쇄 설정 ===== */
-@page { size: A4 portrait; margin: 12mm 12mm 14mm 12mm; }
+/* Recharts 잘림 방지 */
+#report-root .recharts-wrapper,
+#report-root .recharts-wrapper svg,
+#report-root .recharts-surface {
+  overflow: visible !important;
+  max-width: 100% !important;
+}
+
+/* 섹션 공통: 내부 컨텐츠 살짝 여백 */
+#report-root .section-content { padding: 6px; }
+
+/* 그래프 섹션 내부는 테두리/배경 제거(섹션 테두리만 사용) */
+#report-root .graphs-section .chart-container {
+  border: none !important;
+  background: transparent !important;
+  padding: 6px !important;
+}
+
+/* =========================
+   인쇄 / PDF
+========================= */
+@page { size: A4; margin: 12mm; }
 
 @media print {
   html, body {
+    background: #fff !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
-    background: #fff !important;
-    color: #000 !important;
   }
 
-  /* 리포트만 보이게(레이아웃 유지) */
-  body * { visibility: hidden !important; }
-  #report-root, #report-root * { visibility: visible !important; }
+  /* report-root만 출력 */
+  #root > * { display: none !important; }
+  #report-root { display: block !important; }
 
-  /* 리포트 박스 A4 폭 맞추기 */
+  /* 왼쪽 정렬 + 안쪽 여백 */
   #report-root {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
-    width: 180mm !important;
-    margin: 0 !important;
-    padding: 0 !important;   /* 여백은 @page 사용 */
-    background: #fff !important;
-    color: #000 !important;
-    border-radius: 0 !important;
+    position: static !important;
+    margin: 0 auto 0 0 !important;     /* 왼쪽 정렬 */
+    width: auto !important;
+    max-width: 180mm !important;       /* 내용 폭 */
+    padding: 0 0 0 3mm !important;     /* 왼쪽 살짝 여백 */
+    border: none !important;
     box-shadow: none !important;
-    line-height: 1.5 !important;
-    box-sizing: border-box !important;
-  }
-
-  /* 다른 UI 숨김 */
-  .no-print { display: none !important; }
-
-  /* 그래프 1열 강제 */
-  .graphs-grid {
-    display: grid !important;
-    grid-template-columns: 1fr !important;
-    gap: 8mm !important;
-  }
-
-  /* 중간 끊김 방지 */
-  .card, section, table, tr, img, svg, canvas {
-    break-inside: avoid !important;
-    page-break-inside: avoid !important;
-  }
-
-  /* 렌더 꼬임 방지 */
-  * { animation: none !important; transition: none !important; transform: none !important; }
-
-  /* print-mode일 때 흰색 더 강하게 */
-  body.print-mode #report-root,
-  body.print-mode #report-root * {
     background: #fff !important;
     color: #000 !important;
   }
+
+  /* 내부 장식 최소화 */
+  #report-root *, #report-root *::before, #report-root *::after {
+    box-shadow: none !important;
+    outline: none !important;
+    background-image: none !important;
+  }
+
+  /* 섹션/표 테두리만 유지(연한 회색) */
+  #report-root section { border-color: #e5e7eb !important; }
+  #report-root [style*="border"] { border-color: #e5e7eb !important; }
+  #report-root table, #report-root th, #report-root td { border-color: #e5e7eb !important; }
+
+  /* 그래프 섹션 내부는 카드/테두리 제거 */
+  #report-root .graphs-section .chart-container,
+  #report-root .graphs-section [style*="border"] {
+    border: none !important;
+    background: transparent !important;
+  }
+
+  /* 격자선은 아주 연하게 */
+  #report-root .recharts-cartesian-grid line { stroke: #eee !important; }
+
+  /* SVG 배경 사각형 제거 */
+  #report-root svg rect[fill^="#"],
+  #report-root svg rect[stroke] { stroke: transparent !important; fill: transparent !important; }
+
+  /* Recharts 잘림 방지 */
+  #report-root .recharts-wrapper,
+  #report-root .recharts-wrapper svg,
+  #report-root .recharts-surface { overflow: visible !important; }
+}
+
+/* JS로 .print-mode 준 경우도 동일 동작 */
+.print-mode #root > * { display: none !important; }
+.print-mode #report-root {
+  display: block !important;
+  position: static !important;
+  margin: 0 auto 0 0 !important;
+  width: auto !important;
+  max-width: 180mm !important;
+  padding: 0 0 0 3mm !important;
+  background: #fff !important;
+  color: #000 !important;
+  border: none !important;
+  box-shadow: none !important;
 }

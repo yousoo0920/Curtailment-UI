@@ -1,3 +1,4 @@
+// src/pages/ReportPage.jsx
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import exportPdf from "../utils/exportPdf";
 import {
@@ -6,24 +7,18 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
-  Legend,
 } from "recharts";
 
-/* ========== 유틸 ========== */
 const pad = (n) => String(n).padStart(2, "0");
 const nowStr = () => {
   const d = new Date();
-  return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 const nf = (v, d = 1) => {
   const n = Number(v);
   return Number.isFinite(n) ? n.toFixed(d) : "-";
 };
 
-/* ========== 더미 시리즈(랜덤 제거, 초기 1회 고정) ========== */
 const buildDummyCurtail = () =>
   Array.from({ length: 24 }, (_, h) => ({
     hour: `${h}:00`,
@@ -36,26 +31,23 @@ const buildDummyESS = () =>
     discharge: Math.max(0, Math.round((Math.max(0, Math.sin(h / 2.2) * 7 + 6)) * 10) / 10),
   }));
 
-/* ========== 차트 리사이즈 흔들림 방지 래퍼 ========== */
-/** 부모 width를 정수로 고정(미세 리사이즈 방지) + 인쇄/캡처시 우측 여유 */
-function ChartBox({ height = 260, locked = false, children }) {
+function ChartBox({ height = 260, locked = false, widthScale = 1, heightScale = 1, children }) {
   const hostRef = useRef(null);
-  const [width, setWidth] = useState(0);
+  const [dims, setDims] = useState({ w: 0, h: height });
 
   useLayoutEffect(() => {
     const el = hostRef.current;
     if (!el) return;
 
     const measure = () => {
-      const raw = el.clientWidth || el.getBoundingClientRect().width || 0;
-      // 인쇄/캡처(locked)일 때 우측 여유 40px 확보 → Recharts SVG가 우측에서 잘리는 현상 방지
-      const w = Math.max(0, Math.floor(raw) - (locked ? 40 : 0));
-      if (w && w !== width) setWidth(w);
+      const rawW = el.clientWidth || el.getBoundingClientRect().width || 0;
+      const newW = Math.max(0, Math.floor(rawW * (locked ? widthScale : 1)));
+      const newH = Math.max(0, Math.floor(height * (locked ? heightScale : 1)));
+      if (newW !== dims.w || newH !== dims.h) setDims({ w: newW, h: newH });
     };
 
     measure();
-
-    if (locked) return; // 인쇄/캡처 중에는 1회 측정만
+    if (locked) return;
 
     let rid = 0;
     const ro = new ResizeObserver(() => {
@@ -68,30 +60,52 @@ function ChartBox({ height = 260, locked = false, children }) {
       cancelAnimationFrame(rid);
       ro.disconnect();
     };
-  }, [locked, width]);
+  }, [locked, widthScale, heightScale, height, dims.w, dims.h]);
 
   return (
     <div ref={hostRef} style={{ height, width: "100%", overflow: "visible", boxSizing: "border-box" }}>
-      {width > 0 ? children(width, height) : null}
+      {dims.w > 0 ? children(dims.w, dims.h) : null}
     </div>
   );
 }
 
-/* ========== 페이지 ========== */
 export default function ReportPage() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // 화면/인쇄/캡처 모드
-  const [theme, setTheme] = useState("dark");      // "dark" | "light"
-  const [pdfMode, setPdfMode] = useState(false);   // html2canvas 캡처 모드
-  const [printMode, setPrintMode] = useState(false); // window.print 인쇄 모드
-  const [pdfKey, setPdfKey] = useState(0);         // 차트 강제 리마운트 키
+  const [theme, setTheme] = useState("dark");
+  const [locked, setLocked] = useState(false); // 인쇄/캡처 중 차트 잠금
+  const [pdfKey, setPdfKey] = useState(0);
 
-  // 인쇄 훅(브라우저 인쇄 버튼 포함)
   useEffect(() => {
-    const onBefore = () => { setPrintMode(true); document.body.classList.add("print-mode"); };
-    const onAfter  = () => { setPrintMode(false); document.body.classList.remove("print-mode"); };
+    const styleId = "report-print-style";
+    if (!document.getElementById(styleId)) {
+      const s = document.createElement("style");
+      s.id = styleId;
+      s.innerHTML = `
+        @media print {
+          body.print-mode { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          #report-root { width: 190mm !important; max-width: 190mm !important; margin: 0 auto !important; padding: 10mm !important; background: #ffffff !important; color: #000000 !important; }
+          .no-print, [data-html2canvas-ignore="true"] { display: none !important; }
+          section, table, tr, td, th { break-inside: avoid; page-break-inside: avoid; }
+          h1, h2 { break-after: avoid-page; }
+        }
+      `;
+      document.head.appendChild(s);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onBefore = () => {
+      document.body.classList.add("print-mode");
+      setLocked(true);
+      setTheme("light");
+    };
+    const onAfter = () => {
+      document.body.classList.remove("print-mode");
+      setLocked(false);
+      setTheme("dark");
+    };
     window.addEventListener("beforeprint", onBefore);
     window.addEventListener("afterprint", onAfter);
     return () => {
@@ -100,26 +114,12 @@ export default function ReportPage() {
     };
   }, []);
 
-  // 보고서 구성요소 선택
   const [selected, setSelected] = useState({
-    meta: true,
-    exec: true,
-    kpi: true,
-    graphs: true,
-    curtail: true,
-    pv: true,
-    ess: true,
-    vpp: true,
-    econ: true,
-    alarms: true,
-    avail: true,
-    energy: true,
-    concl: true,
-    log: false,
+    meta: true, exec: true, kpi: true, graphs: true, curtail: true, pv: true, ess: true,
+    vpp: true, econ: true, alarms: true, avail: true, energy: true, concl: true, log: false,
   });
   const toggle = (k) => setSelected((p) => ({ ...p, [k]: !p[k] }));
 
-  /* ----- 데이터 매핑 ----- */
   const plant = {
     name: status?.site?.name ?? "예시 태양광·ESS 플랜트",
     location: status?.site?.location ?? "KOR",
@@ -180,7 +180,6 @@ export default function ReportPage() {
     curtail_kWh: Math.round(Number(status?.curtailment?.actual_cum_today ?? 0) * 1000),
   };
 
-  /* ----- 차트 데이터: 초기 1회 더미, 실제값 변동시에만 갱신 ----- */
   const dummyCurtailRef = useRef(buildDummyCurtail());
   const dummyESSRef = useRef(buildDummyESS());
   const [chartCurtail, setChartCurtail] = useState(dummyCurtailRef.current);
@@ -195,7 +194,6 @@ export default function ReportPage() {
       }));
       if (JSON.stringify(next) !== JSON.stringify(chartCurtail)) setChartCurtail(next);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.curtailment?.hourly, chartCurtail]);
 
   useEffect(() => {
@@ -209,10 +207,8 @@ export default function ReportPage() {
       }));
       if (JSON.stringify(next) !== JSON.stringify(chartESS)) setChartESS(next);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.ess?.charge_kw_series, status?.ess?.discharge_kw_series, chartESS]);
 
-  /* ----- 섹션 목록(선택 반영 + 자동 번호) ----- */
   const sections = useMemo(() => {
     const list = [
       selected.meta && { id: "meta", title: "플랜트 개요" },
@@ -233,11 +229,29 @@ export default function ReportPage() {
     return list.map((s, i) => ({ ...s, no: i + 1 }));
   }, [selected]);
 
-  /* ----- PDF(html2canvas) 저장 ----- */
+  const PRINT_WIDTH_SCALE = 0.82;
+  const PRINT_HEIGHT_SCALE = 0.85;
+
+  const handlePrint = async () => {
+    if (loading) return;
+    setLoading(true);
+    document.body.classList.add("print-mode");
+    setLocked(true);
+    setTheme("light");
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    window.print();
+    setTimeout(() => {
+      document.body.classList.remove("print-mode");
+      setLocked(false);
+      setTheme("dark");
+      setLoading(false);
+    }, 100);
+  };
+
   const handleExport = async () => {
     if (loading) return;
     setLoading(true);
-    setPdfMode(true);
+    setLocked(true);
     setTheme("light");
     setPdfKey((k) => k + 1);
 
@@ -245,24 +259,21 @@ export default function ReportPage() {
     const prev = { bg: root.style.background, color: root.style.color };
     root.style.background = "#ffffff";
     root.style.color = "#000000";
-
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     const d = new Date();
-    const fileName = `report_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(
-      d.getHours()
-    )}-${pad(d.getMinutes())}.pdf`;
-    await exportPdf(root, fileName);
-
-    // 복원
-    root.style.background = prev.bg;
-    root.style.color = prev.color;
-    setTheme("dark");
-    setPdfMode(false);
-    setLoading(false);
+    const fileName = `report_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}.pdf`;
+    try {
+      await exportPdf(root, fileName);
+    } finally {
+      root.style.background = prev.bg;
+      root.style.color = prev.color;
+      setTheme("dark");
+      setLocked(false);
+      setLoading(false);
+    }
   };
 
-  /* ----- 초기 데이터 요청 ----- */
   useEffect(() => {
     const load = async () => {
       try {
@@ -274,14 +285,12 @@ export default function ReportPage() {
     load();
   }, []);
 
-  /* ----- 테마 색상 ----- */
   const color = theme === "dark" ? "#dfeaf1" : "#1a1a1a";
   const sub = theme === "dark" ? "rgba(97,138,164,0.95)" : "#616a73";
   const border = theme === "dark" ? "#2a3e4d" : "#dfe6ee";
   const cardBg = theme === "dark" ? "#14222c" : "#fff";
   const gridColor = theme === "dark" ? "rgba(255,255,255,0.12)" : "#e6eef5";
 
-  /* ----- 공통 섹션 스타일(잘림 방지) ----- */
   const sectionStyle = {
     marginBottom: 26,
     padding: 18,
@@ -290,23 +299,13 @@ export default function ReportPage() {
     borderRadius: 10,
     breakInside: "avoid",
     pageBreakInside: "avoid",
-    WebkitRegionBreakInside: "avoid",
     boxSizing: "border-box",
+    overflow: "visible",
   };
 
-  // html2canvas 캡처 시 폭 고정(브라우저 인쇄는 CSS @media print로 처리)
-  const rootFixed = pdfMode
-    ? {
-        width: 790,
-        maxWidth: 790,
-        margin: "0 auto",
-        padding: 20,
-      }
+  const rootFixed = document.body.classList.contains("print-mode")
+    ? { width: 790, maxWidth: 790, margin: "0 auto", padding: 20 }
     : {};
-
-  // 그래프 그리드: 화면 2열, 캡처/인쇄 1열
-  const graphsGridCols = pdfMode ? "1fr" : "1fr 1fr";
-  const locked = pdfMode || printMode; // 인쇄/캡처 중엔 차트 폭/마진 고정
 
   return (
     <div className="w-full px-2 mt-1 pb-4">
@@ -322,11 +321,8 @@ export default function ReportPage() {
           ...rootFixed,
         }}
       >
-        {/* ===== 헤더 ===== */}
         <header style={{ position: "relative", marginBottom: 22, paddingRight: 480 }}>
           <div style={{ fontSize: 18, color: sub, marginBottom: 6 }}>일일 운영 리포트</div>
-
-          {/* 제목은 1줄 고정: 공백은 NBSP(\u00A0)로 */}
           <h1
             style={{
               fontSize: 28,
@@ -339,10 +335,8 @@ export default function ReportPage() {
           >
             {"Curtailment\u00A0/\u00A0ESS\u00B7VPP"}
           </h1>
-
           <div style={{ fontSize: 13, color: sub, marginTop: 4 }}>생성일시: {nowStr()}</div>
 
-          {/* 우상단 컨트롤(인쇄/캡처 제외) */}
           <div
             data-html2canvas-ignore="true"
             className="no-print"
@@ -377,21 +371,16 @@ export default function ReportPage() {
             </div>
 
             <div style={{ display: "flex", gap: 8 }}>
-              {/* 브라우저 인쇄 */}
               <button
                 type="button"
-                onClick={() => {
-                  document.body.classList.add("print-mode");
-                  window.print();
-                  setTimeout(() => document.body.classList.remove("print-mode"), 2000);
-                }}
+                onClick={handlePrint}
+                disabled={loading}
                 className="px-3 py-2 rounded border border-[#2a3e4d] bg-[#15222b] text-[#cfe7f6]"
                 style={{ width: 120, textAlign: "center" }}
               >
                 인쇄/PDF
               </button>
 
-              {/* html2canvas 캡처 PDF */}
               <button
                 type="button"
                 onClick={handleExport}
@@ -405,8 +394,7 @@ export default function ReportPage() {
           </div>
         </header>
 
-        {/* ===== 섹션 렌더링 ===== */}
-        {sections.map((s) => {
+        {useMemo(() => sections.map((s) => {
           if (s.id === "meta") {
             return (
               <section key={s.id} style={sectionStyle}>
@@ -483,96 +471,54 @@ export default function ReportPage() {
 
           if (s.id === "graphs") {
             return (
-              <section key={s.id} style={sectionStyle}>
+              <section key={s.id} style={sectionStyle} className="graphs-section">
                 <h2 style={{ fontSize: 18, fontWeight: 800, margin: "0 0 12px", whiteSpace: "nowrap", wordBreak: "keep-all" }}>
                   {s.no}. {"그래프: 출력제어 / ESS\u00A0\u00B7\u00A0방전"}
                 </h2>
-
-                <div className="graphs-grid" style={{ display: "grid", gridTemplateColumns: graphsGridCols, gap: 12 }}>
-                  {/* 출력제어 */}
-                  <div
-                    className="card"
-                    style={{
-                      border: `1px solid ${border}`,
-                      borderRadius: 8,
-                      padding: locked ? 14 : 12,
-                      overflow: "visible",
-                      breakInside: "avoid",
-                      pageBreakInside: "avoid",
-                    }}
-                  >
-                    <ChartBox height={locked ? 220 : 260} locked={locked}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
+                  <div className="chart-container" style={{ padding: 4 }}>
+                    <ChartBox
+                      height={locked ? 240 : 300}
+                      locked={locked}
+                      widthScale={PRINT_WIDTH_SCALE}
+                      heightScale={PRINT_HEIGHT_SCALE}
+                    >
                       {(w, h) => (
                         <RLineChart
                           key={`curtail-${pdfKey}-${locked ? "locked" : "screen"}`}
                           width={w}
                           height={h}
                           data={chartCurtail}
-                          margin={{ top: 6, right: 50, left: 10, bottom: 14 }} // 우측 여유 50
+                          margin={{ top: 6, right: 100, left: 12, bottom: 22 }}
                         >
                           <CartesianGrid stroke={gridColor} strokeDasharray="3 3" />
-                          <XAxis dataKey="hour" tick={{ fill: color, fontSize: 11 }} preserveStartEnd />
+                          <XAxis dataKey="hour" tick={{ fill: color, fontSize: 11 }} preserveStartEnd padding={{ right: 40 }} />
                           <YAxis tick={{ fill: color, fontSize: 11 }} />
-                          <Tooltip contentStyle={{ fontSize: 12 }} labelStyle={{ color: "#666" }} />
-                          <Legend wrapperStyle={{ fontSize: 12, color }} />
-                          <Line
-                            type="monotone"
-                            dataKey="curtail"
-                            name="출력제어(MWh)"
-                            stroke="#2563eb"
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
+                          <Line type="monotone" dataKey="curtail" name="출력제어(MWh)" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
                         </RLineChart>
                       )}
                     </ChartBox>
                   </div>
-
-                  {/* ESS 충/방전 */}
-                  <div
-                    className="card"
-                    style={{
-                      border: `1px solid ${border}`,
-                      borderRadius: 8,
-                      padding: locked ? 14 : 12,
-                      overflow: "visible",
-                      breakInside: "avoid",
-                      pageBreakInside: "avoid",
-                    }}
-                  >
-                    <ChartBox height={locked ? 220 : 260} locked={locked}>
+                  <div className="chart-container" style={{ padding: 4 }}>
+                    <ChartBox
+                      height={locked ? 240 : 300}
+                      locked={locked}
+                      widthScale={PRINT_WIDTH_SCALE}
+                      heightScale={PRINT_HEIGHT_SCALE}
+                    >
                       {(w, h) => (
                         <RLineChart
                           key={`ess-${pdfKey}-${locked ? "locked" : "screen"}`}
                           width={w}
                           height={h}
                           data={chartESS}
-                          margin={{ top: 6, right: 50, left: 10, bottom: 14 }} // 우측 여유 50
+                          margin={{ top: 6, right: 100, left: 12, bottom: 22 }}
                         >
                           <CartesianGrid stroke={gridColor} strokeDasharray="3 3" />
-                          <XAxis dataKey="hour" tick={{ fill: color, fontSize: 11 }} preserveStartEnd />
+                          <XAxis dataKey="hour" tick={{ fill: color, fontSize: 11 }} preserveStartEnd padding={{ right: 40 }} />
                           <YAxis tick={{ fill: color, fontSize: 11 }} />
-                          <Tooltip contentStyle={{ fontSize: 12 }} labelStyle={{ color: "#666" }} />
-                          <Legend wrapperStyle={{ fontSize: 12, color }} />
-                          <Line
-                            type="monotone"
-                            dataKey="charge"
-                            name="충전(kW)"
-                            stroke="#16a34a"
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="discharge"
-                            name="방전(kW)"
-                            stroke="#ef4444"
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
+                          <Line type="monotone" dataKey="charge" name="충전(kW)" stroke="#16a34a" strokeWidth={2} dot={false} isAnimationActive={false} />
+                          <Line type="monotone" dataKey="discharge" name="방전(kW)" stroke="#ef4444" strokeWidth={2} dot={false} isAnimationActive={false} />
                         </RLineChart>
                       )}
                     </ChartBox>
@@ -629,9 +575,7 @@ export default function ReportPage() {
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}`, color: sub }}>PR(성능비)</td>
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{nf(pv.pr * 100, 0)} %</td>
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}`, color: sub }}>모듈/외기 온도</td>
-                      <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>
-                        {nf(pv.tempC, 0)} ℃ / {nf(pv.ambC, 0)} ℃
-                      </td>
+                      <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{nf(pv.tempC, 0)} ℃ / {nf(pv.ambC, 0)} ℃</td>
                     </tr>
                   </tbody>
                 </table>
@@ -657,9 +601,7 @@ export default function ReportPage() {
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}`, color: sub }}>사이클</td>
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{nf(ess.cycles, 2)} cycle</td>
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}`, color: sub }}>SOH/온도</td>
-                      <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>
-                        {nf(ess.soh, 0)} % / {nf(ess.tempC, 0)} ℃
-                      </td>
+                      <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{nf(ess.soh, 0)} % / {nf(ess.tempC, 0)} ℃</td>
                     </tr>
                     <tr>
                       <td style={{ padding: 12, color: sub }}>상태</td>
@@ -683,9 +625,7 @@ export default function ReportPage() {
                   <tbody>
                     <tr>
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}`, width: 180, color: sub }}>활성/전체 노드</td>
-                      <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>
-                        {vpp.active} / {vpp.total}
-                      </td>
+                      <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{vpp.active} / {vpp.total}</td>
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}`, width: 180, color: sub }}>가동률</td>
                       <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{kpi.vppPct} %</td>
                     </tr>
@@ -835,9 +775,7 @@ export default function ReportPage() {
                     ].map(([k, v], i) => (
                       <tr key={i}>
                         <td style={{ padding: 12, borderBottom: `1px solid ${border}` }}>{k}</td>
-                        <td style={{ padding: 12, textAlign: "right", borderBottom: `1px solid ${border}` }}>
-                          {Number(v).toLocaleString()}
-                        </td>
+                        <td style={{ padding: 12, textAlign: "right", borderBottom: `1px solid ${border}` }}>{Number(v).toLocaleString()}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -895,7 +833,7 @@ export default function ReportPage() {
           }
 
           return null;
-        })}
+        }), [sections, border, sub, plant, nowStr, kpi, ess, vpp, smpNow, smpAvg, recNow, recAvg, estRevenueKRW, pv, peakWin, peakRisk, energy, theme, cardBg, color, gridColor, locked, pdfKey])}
       </div>
     </div>
   );
